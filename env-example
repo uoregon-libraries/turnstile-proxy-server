@@ -1,0 +1,12 @@
+# Pick either release or debug. Almost always "release".
+GIN_MODE=release
+
+# What address and port will TPS listen on?
+BIND_ADDR=:8080
+
+# Turnstile keys - you need to have a cloudflare login for this
+TURNSTILE_SITE_KEY=foo
+TURNSTILE_SECRET_KEY=bar
+
+# Choose something long and secure here for encrypting the JWT cookie
+JWT_SIGNING_KEY=shhhhhh-this-is-very-secret
