@@ -10,6 +10,7 @@ tool (
 require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/samber/slog-gin v1.18.0
 )
 

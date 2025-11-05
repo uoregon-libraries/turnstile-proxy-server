@@ -10,3 +10,7 @@ TURNSTILE_SECRET_KEY=bar
 
 # Choose something long and secure here for encrypting the JWT cookie
 JWT_SIGNING_KEY=shhhhhh-this-is-very-secret
+
+# What is the base URL that TPS is protecting? This should be a *private* URL,
+# not a public URL, as Caddy and TPS should be fronting the protected app.
+PROXY_TARGET="http://localhost"

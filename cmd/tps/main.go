@@ -12,12 +12,14 @@ import (
 )
 
 func main() {
-	var logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
+	var logOpts = &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true}
+	var logger = slog.New(slog.NewTextHandler(os.Stdout, logOpts))
 
 	var bindAddr = os.Getenv("BIND_ADDR")
 	var turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")
 	var turnstileSiteKey = os.Getenv("TURNSTILE_SITE_KEY")
 	var jwtSigningKey = os.Getenv("JWT_SIGNING_KEY")
+	var proxyTarget = os.Getenv("PROXY_TARGET")
 
 	var errs []string
 	if bindAddr == "" {
@@ -32,6 +34,9 @@ func main() {
 	if jwtSigningKey == "" {
 		errs = append(errs, "JWT_SIGNING_KEY is not set")
 	}
+	if proxyTarget == "" {
+		errs = append(errs, "PROXY_TARGET is not set")
+	}
 	if len(errs) != 0 {
 		logger.Error("Cannot start server", "error", strings.Join(errs, "; "))
 		os.Exit(1)
@@ -42,7 +47,7 @@ func main() {
 	router.Use(sloggin.New(ginLog))
 	router.Use(gin.Recovery())
 
-	var server = NewServer(router, turnstileSiteKey, turnstileSecretKey, jwtSigningKey, logger)
+	var server = NewServer(router, turnstileSiteKey, turnstileSecretKey, jwtSigningKey, proxyTarget, logger)
 	server.loadTemplates("internal/templates/*.go.html", templates.FS)
 
 	logger.Info("Starting TPS", "addr", bindAddr)
