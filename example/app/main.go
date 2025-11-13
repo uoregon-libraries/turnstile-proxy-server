@@ -1,3 +1,5 @@
+// Package main is our tiny static page handler to serve up whatever's in the
+// protected and public subdirs
 package main
 
 import (
