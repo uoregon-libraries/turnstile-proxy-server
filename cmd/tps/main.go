@@ -76,11 +76,11 @@ func serve() {
 	}
 
 	var router = gin.New()
-	var ginLog = logger.With("from", "gin server")
+	var ginLog = logger.With("log.source", "gin.Engine")
 	router.Use(sloggin.New(ginLog))
 	router.Use(gin.Recovery())
 
-	var server = NewServer(router, turnstileSiteKey, turnstileSecretKey, jwtSigningKey, proxyTarget, logger)
+	var server = NewServer(router, turnstileSiteKey, turnstileSecretKey, jwtSigningKey, proxyTarget, logger.With("log.source", "main.Server"))
 	server.loadTemplates("internal/templates/*.go.html", templates.FS)
 
 	logger.Info("Starting TPS", "addr", bindAddr)
