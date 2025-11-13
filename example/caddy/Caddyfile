@@ -1,0 +1,11 @@
+{
+	http_port 8080
+	debug
+}
+
+:8080 {
+	log
+
+	reverse_proxy /protected/* tps:8080
+	reverse_proxy * app:8080
+}

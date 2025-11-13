@@ -1,0 +1,10 @@
+services:
+  tps:
+    environment:
+      TURNSTILE_SITE_KEY: "foo"
+      TURNSTILE_SECRET_KEY: "bar"
+      JWT_SIGNING_KEY: "shhhhhh-this-is-very-secret"
+
+  caddy:
+    ports:
+      - "8080:8080"

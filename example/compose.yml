@@ -1,0 +1,18 @@
+services:
+  app:
+    build: ./app
+
+  tps:
+    build: ..
+    environment:
+      GIN_MODE: "release"
+      BIND_ADDR: ":8080"
+      PROXY_TARGET: "http://app:8080"
+    depends_on:
+      - app
+
+  caddy:
+    build: ./caddy
+    depends_on:
+      - tps
+      - app
