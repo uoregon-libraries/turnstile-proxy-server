@@ -1,16 +1,19 @@
+// Package requestid is a simple id generator like UUID but without all the
+// wonky versions or unnecessary hyphens
 package requestid
 
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"log"
 )
 
 // New generates a new random request ID.
+//
+// Note: crypto's [rand.Read] will panic on errors, so it won't return an error
+// even if one happens. Because of that, this function doesn't need error
+// handling. See https://github.com/golang/go/issues/66821.
 func New() string {
-	bytes := make([]byte, 16)
-	if _, err := rand.Read(bytes); err != nil {
-		log.Fatalf("could not generate random bytes for request ID: %v", err)
-	}
+	var bytes = make([]byte, 16)
+	rand.Read(bytes)
 	return hex.EncodeToString(bytes)
 }
