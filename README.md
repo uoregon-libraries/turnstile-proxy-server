@@ -22,6 +22,10 @@ up. Once set, you can simply compile (with `make`) and run.
   Must like your value for nginx or Caddy's proxy target, this is how TPS finds
   your service so it can proxy to protected content after a turnstile challenge
   is successful.
+- `DATABASE_DSN`: DSN for the MariaDB database, which stores various stats for
+  analysis. e.g., `user:pass@tcp(host:3306)/dbname?parseTime=true`.
+  - The `parseTime` argument is important for something I no longer recall, but
+    it really is important, so make sure you have that!
 
 ## Usage
 

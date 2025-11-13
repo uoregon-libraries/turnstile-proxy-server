@@ -1,4 +1,8 @@
 services:
+  db:
+    ports:
+      - "3306:3306"
+
   tps:
     environment:
       TURNSTILE_SITE_KEY: "foo"

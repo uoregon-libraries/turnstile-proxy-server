@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"time"
+	"turnstile-proxy-server/internal/db"
 	"turnstile-proxy-server/internal/requestid"
 
 	"github.com/gin-gonic/gin"
@@ -43,6 +44,7 @@ type cloudflareVerifyResponse struct {
 type Server struct {
 	r             *gin.Engine
 	logger        *slog.Logger
+	db            *db.Store
 	siteKey       string
 	secretKey     string
 	jwtSigningKey []byte
@@ -51,7 +53,7 @@ type Server struct {
 }
 
 // NewServer creates and configures a new Server instance
-func NewServer(router *gin.Engine, siteKey string, secretKey string, jwtSigningKey string, proxyTarget string, logger *slog.Logger) *Server {
+func NewServer(router *gin.Engine, siteKey string, secretKey string, jwtSigningKey string, proxyTarget string, store *db.Store, logger *slog.Logger) *Server {
 	var requestCache = cache.New(5*time.Minute, 10*time.Minute)
 
 	var parsedURL, err = url.Parse(proxyTarget)
@@ -62,6 +64,7 @@ func NewServer(router *gin.Engine, siteKey string, secretKey string, jwtSigningK
 
 	var s = &Server{
 		r:             router,
+		db:            store,
 		siteKey:       siteKey,
 		secretKey:     secretKey,
 		jwtSigningKey: []byte(jwtSigningKey),
@@ -103,6 +106,12 @@ func (s *Server) handleProxy(c *gin.Context) {
 
 		if parseErr == nil {
 			s.logger.Info("JWT is valid, proxying request")
+			s.db.LogRequest(db.RequestLog{
+				ClientIP:      c.ClientIP(),
+				Timestamp:     time.Now(),
+				URL:           c.Request.URL.String(),
+				HadValidToken: true,
+			})
 			s.replayRequest(c, c.Request)
 			return
 		}
@@ -135,9 +144,23 @@ func (s *Server) handleProxy(c *gin.Context) {
 
 		if verifyResp.Success {
 			s.logger.Info("Turnstile verification successful")
+			s.db.LogRequest(db.RequestLog{
+				ClientIP:              c.ClientIP(),
+				Timestamp:             time.Now(),
+				URL:                   c.Request.URL.String(),
+				WasPresentedChallenge: true,
+				ChallengeSucceeded:    true,
+			})
 			s.issueTokenAndReplay(c, requestID)
 		} else {
 			s.logger.Warn("Turnstile verification failed", "error-codes", verifyResp.ErrorCodes)
+			s.db.LogRequest(db.RequestLog{
+				ClientIP:              c.ClientIP(),
+				Timestamp:             time.Now(),
+				URL:                   c.Request.URL.String(),
+				WasPresentedChallenge: true,
+				ChallengeSucceeded:    false,
+			})
 			c.HTML(http.StatusUnauthorized, "failed.go.html", nil)
 		}
 		return

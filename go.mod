@@ -9,6 +9,7 @@ tool (
 
 require (
 	github.com/gin-gonic/gin v1.11.0
+	github.com/go-sql-driver/mysql v1.9.3
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/samber/slog-gin v1.18.0
@@ -16,6 +17,7 @@ require (
 
 require (
 	codeberg.org/chavacava/garif v0.2.0 // indirect
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/bytedance/sonic v1.14.0 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect

@@ -2,17 +2,42 @@ services:
   app:
     build: ./app
 
+  db:
+    image: mariadb:lts
+    environment:
+      MYSQL_DATABASE: tps
+      MYSQL_USER: tps
+      MYSQL_PASSWORD: tps
+      MYSQL_RANDOM_ROOT_PASSWORD: 1
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    ports:
+      - "3306:3306"
+    volumes:
+      - db:/var/lib/mysql
+
   tps:
     build: ..
     environment:
       GIN_MODE: "release"
       BIND_ADDR: ":8080"
       PROXY_TARGET: "http://app:8080"
+      DATABASE_DSN: "tps:tps@tcp(db:3306)/tps?parseTime=true"
     depends_on:
-      - app
+      app:
+        condition: service_started
+      db:
+        condition: service_healthy
 
   caddy:
     build: ./caddy
     depends_on:
       - tps
       - app
+
+volumes:
+  db: {}
