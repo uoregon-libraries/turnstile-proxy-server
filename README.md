@@ -25,6 +25,8 @@ up. Once set, you can simply compile (with `make`) and run.
 
 ## Usage
 
+Build via `make`, and run via `./bin/tps [serve|help]`.
+
 By itself, TPS isn't very useful beyond very basic testing.
 
 You have to start with a reverse proxy of some kind, like Caddy or nginx. TPS

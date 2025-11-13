@@ -16,6 +16,35 @@ import (
 func main() {
 	fmt.Printf("Turnstile Proxy Server, build %s\n\n", version.Version)
 
+	if len(os.Args) < 2 {
+		printUsage()
+		return
+	}
+
+	switch os.Args[1] {
+	case "serve":
+		serve()
+	case "help":
+		help()
+	default:
+		printUsage()
+	}
+}
+
+func printUsage() {
+	fmt.Println("Usage: tps [serve|help]")
+}
+
+func help() {
+	fmt.Println("The following environment variables are required:")
+	fmt.Println(`- BIND_ADDR: address TPS listens on, e.g., ":8080" to listen on all IPs at port 8080`)
+	fmt.Println("- TURNSTILE_SECRET_KEY: your Turnstile secret key")
+	fmt.Println("- TURNSTILE_SITE_KEY: your Turnstile site key")
+	fmt.Println("- JWT_SIGNING_KEY: a key to sign JWTs with; pick something long and random")
+	fmt.Println("- PROXY_TARGET: the internal URL that TPS will be reverse-proxying")
+}
+
+func serve() {
 	var logOpts = &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true}
 	var logger = slog.New(slog.NewTextHandler(os.Stdout, logOpts))
 
