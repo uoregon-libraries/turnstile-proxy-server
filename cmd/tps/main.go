@@ -2,16 +2,20 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"turnstile-proxy-server/internal/templates"
+	"turnstile-proxy-server/internal/version"
 
 	"github.com/gin-gonic/gin"
 	sloggin "github.com/samber/slog-gin"
 )
 
 func main() {
+	fmt.Printf("Turnstile Proxy Server, build %s\n\n", version.Version)
+
 	var logOpts = &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true}
 	var logger = slog.New(slog.NewTextHandler(os.Stdout, logOpts))
 
