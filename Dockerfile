@@ -1,7 +1,7 @@
 FROM golang:1-alpine AS build
 
 RUN apk update && apk upgrade
-RUN apk add make upx
+RUN apk add make upx git
 
 WORKDIR /usr/local/src/turnstile-proxy
 COPY go.mod go.sum /usr/local/src/turnstile-proxy
@@ -9,6 +9,7 @@ RUN go mod download
 
 COPY internal ./internal
 COPY cmd ./cmd
+COPY .git ./.git
 COPY Makefile ./Makefile
 
 RUN make
