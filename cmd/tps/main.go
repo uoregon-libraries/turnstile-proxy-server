@@ -46,13 +46,14 @@ func printUsage() {
 }
 
 func help() {
-	fmt.Println("The following environment variables are required:")
-	fmt.Println(`- BIND_ADDR: address TPS listens on, e.g., ":8080" to listen on all IPs at port 8080`)
-	fmt.Println("- TURNSTILE_SECRET_KEY: your Turnstile secret key")
-	fmt.Println("- TURNSTILE_SITE_KEY: your Turnstile site key")
-	fmt.Println("- JWT_SIGNING_KEY: a key to sign JWTs with; pick something long and random")
-	fmt.Println("- PROXY_TARGET: the internal URL that TPS will be reverse-proxying")
-	fmt.Println("- DATABASE_DSN: DSN for the MariaDB database, e.g., user:pass@tcp(host:3306)/dbname?parseTime=true")
+	fmt.Println("Configuration:")
+	fmt.Println(`- BIND_ADDR (required): address TPS listens on, e.g., ":8080" to listen on all IPs at port 8080`)
+	fmt.Println("- TURNSTILE_SECRET_KEY (required): your Turnstile secret key")
+	fmt.Println("- TURNSTILE_SITE_KEY (required): your Turnstile site key")
+	fmt.Println("- JWT_SIGNING_KEY (required): a key to sign JWTs with; pick something long and random")
+	fmt.Println("- PROXY_TARGET (required): the internal URL that TPS will be reverse-proxying")
+	fmt.Println("- DATABASE_DSN (required): DSN for the MariaDB database, e.g., user:pass@tcp(host:3306)/dbname?parseTime=true")
+	fmt.Println("- TEMPLATE_PATH (optional): path to external templates, defaults to /var/local/tps/templates")
 }
 
 func serve() {
@@ -70,8 +71,13 @@ func serve() {
 	router.Use(sloggin.New(ginLog))
 	router.Use(gin.Recovery())
 
-	var server = NewServer(router, turnstileSiteKey, turnstileSecretKey, jwtSigningKey, proxyTarget, store, logger.With("log.source", "main.Server"))
-	server.loadTemplates("internal/templates/*.go.html", templates.FS)
+	var server = NewServer(router, proxyTarget, store).
+		SetSecretKey(turnstileSecretKey).
+		SetSiteKey(turnstileSiteKey).
+		SetLogger(logger.With("log.source", "main.Server"))
+
+	server.LoadCoreTemplates("internal/templates/*.go.html", templates.FS)
+	server.LoadCustomTemplates(templatePath)
 
 	logger.Info("Starting TPS", "addr", bindAddr)
 	err = server.Run(bindAddr)

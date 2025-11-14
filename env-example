@@ -17,3 +17,6 @@ PROXY_TARGET="http://localhost"
 
 # Where will you record the stats? This is a DSN to a MariaDB database.
 DATABASE_DSN="user:pass@tcp(host:3306)/dbname?parseTime=true"
+
+# Where are custom templates (if any) found?
+TEMPLATE_PATH="/var/local/tps/templates"

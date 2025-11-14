@@ -4,20 +4,23 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"time"
 	"turnstile-proxy-server/internal/db"
 	"turnstile-proxy-server/internal/requestid"
 
+	"github.com/gin-contrib/multitemplate"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/patrickmn/go-cache"
+	"github.com/spf13/afero"
 )
 
 const (
@@ -40,9 +43,11 @@ type cloudflareVerifyResponse struct {
 }
 
 // Server wraps a [gin.Engine], encapsulating the handlers' logic and data for
-// presenting the turnstile challenge, verifying, and redirecting
+// presenting the turnstile challenge, verifying the challenge, and finally
+// proxying successful requests
 type Server struct {
 	r             *gin.Engine
+	render        multitemplate.Renderer
 	logger        *slog.Logger
 	db            *db.Store
 	siteKey       string
@@ -50,10 +55,14 @@ type Server struct {
 	jwtSigningKey []byte
 	requestCache  *cache.Cache
 	proxyTarget   *url.URL
+	templates     map[string]string
 }
 
-// NewServer creates and configures a new Server instance
-func NewServer(router *gin.Engine, siteKey string, secretKey string, jwtSigningKey string, proxyTarget string, store *db.Store, logger *slog.Logger) *Server {
+// NewServer creates and configures a new Server instance. Turnstile settings
+// are pre-filled with test values for an "always pass" challenge, and the
+// logger is set up as a discard-everything logger. Use the various SetX
+// methods to change these settings.
+func NewServer(router *gin.Engine, proxyTarget string, db *db.Store) *Server {
 	var requestCache = cache.New(5*time.Minute, 10*time.Minute)
 
 	var parsedURL, err = url.Parse(proxyTarget)
@@ -62,36 +71,137 @@ func NewServer(router *gin.Engine, siteKey string, secretKey string, jwtSigningK
 		return nil
 	}
 
-	var s = &Server{
-		r:             router,
-		db:            store,
-		siteKey:       siteKey,
-		secretKey:     secretKey,
-		jwtSigningKey: []byte(jwtSigningKey),
-		logger:        logger,
-		requestCache:  requestCache,
-		proxyTarget:   parsedURL,
-	}
+	var render = multitemplate.NewRenderer()
 
+	router.HTMLRender = render
+	var s = &Server{
+		r:            router,
+		proxyTarget:  parsedURL,
+		db:           db,
+		render:       render,
+		siteKey:      "1x00000000000000000000AA",
+		secretKey:    "1x0000000000000000000000000000000AA",
+		requestCache: requestCache,
+		templates:    make(map[string]string),
+	}
 	s.r.Any("/*proxyPath", s.handleProxy)
 
 	return s
 }
 
-// loadTemplates is a general-case helper to load either from local disk for
-// hot-reloads, or from an embedded filesystem, depending on the gin mode
-func (s *Server) loadTemplates(pattern string, fs fs.FS) {
-	if gin.Mode() == gin.DebugMode {
-		s.r.LoadHTMLGlob(pattern)
+// SetLogger sets the logger and returns s for chaining
+func (s *Server) SetLogger(l *slog.Logger) *Server {
+	s.logger = l
+	return s
+}
+
+// SetSecretKey sets the turnstile secret key and returns s for chaining
+func (s *Server) SetSecretKey(k string) *Server {
+	s.secretKey = k
+	return s
+}
+
+// SetSiteKey sets the turnstile site key and returns s for chaining
+func (s *Server) SetSiteKey(k string) *Server {
+	s.siteKey = k
+	return s
+}
+
+// LoadCoreTemplates is a general-case helper to load either from local disk
+// for hot-reloads, or from an embedded filesystem, depending on the gin mode
+func (s *Server) LoadCoreTemplates(pattern string, fsys fs.FS) {
+	var from string
+	var af afero.Fs
+	if gin.Mode() == gin.ReleaseMode {
+		af = afero.FromIOFS{fsys}
+		pattern = "*.go.html"
+		from = "io/fs.FS"
+	} else {
+		af = afero.NewOsFs()
+		from = "OS Filesystem"
+	}
+
+	var templates, err = afero.Glob(af, pattern)
+	if err != nil {
+		s.logger.Error("Cannot load core templates", "from", from, "pattern", pattern, "error", err)
+		panic("Fatal error, cannot continue without templates")
+	}
+
+	for _, pth := range templates {
+		if strings.HasSuffix(pth, ".go.html") {
+			var name = "core/" + strings.Replace(filepath.Base(pth), ".go.html", "", 1)
+			s.logger.Debug("Adding core template", "name", name, "path", pth)
+			s.render.AddFromFS(name, afero.NewIOFS(af), pth)
+			s.templates[name] = pth
+		}
+	}
+
+	return
+}
+
+// LoadCustomTemplates finds all templates under the given path named
+// "*.html.go" and registers them for use as custom templates for specific
+// proxied URLs' challenge and failed pages.
+func (s *Server) LoadCustomTemplates(templatePath string) {
+	if templatePath == "" {
 		return
 	}
-	var tmpl = template.Must(template.New("").ParseFS(fs, "*.go.html"))
-	s.r.SetHTMLTemplate(tmpl)
+
+	var err = filepath.Walk(templatePath, func(pth string, info fs.FileInfo, err error) error {
+		if !info.Mode().IsRegular() {
+			return err
+		}
+
+		if strings.HasSuffix(pth, ".go.html") {
+			var name = strings.Replace(pth, templatePath+"/", "", 1)
+			name = strings.Replace(name, ".go.html", "", 1)
+			s.logger.Debug("Adding custom template", "name", name, "path", pth)
+			s.render.AddFromFiles(name, pth)
+			s.templates[name] = pth
+		}
+		return err
+	})
+	if err != nil {
+		s.logger.Error("Failed to load custom templates", "path", templatePath, "error", err)
+	}
 }
 
 // Run starts the server listening on the configured address
 func (s *Server) Run(addr string) error {
+	s.r.HTMLRender = s.render
 	return s.r.Run(addr)
+}
+
+func (s *Server) getTemplate(r *http.Request, shortname string) string {
+	var host = r.Host
+	var path = r.URL.Path
+
+	// Clean the path to prevent directory traversal issues
+	path = filepath.Clean(path)
+
+	// Remove leading slash
+	if len(path) > 0 && path[0] == '/' {
+		path = path[1:]
+	}
+
+	var parts = strings.Split(path, "/")
+	if len(parts) == 1 && parts[0] == "" {
+		parts = []string{}
+	}
+
+	for i := len(parts); i >= 0; i-- {
+		var source = host + "/" + strings.Join(parts[:i], "/")
+		s.logger.Debug("Looking for template", "source", source, "shortname", shortname)
+		var name = filepath.Join(source, shortname)
+		var template = s.templates[name]
+		if template != "" {
+			s.logger.Debug("Found custom template", "name", name)
+			return name
+		}
+	}
+
+	s.logger.Debug("No custom template found, returning default")
+	return "core/"+shortname
 }
 
 func (s *Server) handleProxy(c *gin.Context) {
@@ -161,7 +271,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 				WasPresentedChallenge: true,
 				ChallengeSucceeded:    false,
 			})
-			c.HTML(http.StatusUnauthorized, "failed.go.html", nil)
+			c.HTML(http.StatusUnauthorized, s.getTemplate(c.Request, "failed"), nil)
 		}
 		return
 	}
@@ -182,7 +292,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 	}
 	s.requestCache.Set(newRequestID, cachedReq, cache.DefaultExpiration)
 	s.logger.Info("No/invalid JWT, serving challenge", "requestID", newRequestID)
-	c.HTML(http.StatusOK, "challenge.go.html", gin.H{
+	c.HTML(http.StatusOK, s.getTemplate(c.Request, "challenge"), gin.H{
 		"SiteKey":    s.siteKey,
 		"RequestID":  newRequestID,
 		"PostAction": c.Request.URL.Path,
