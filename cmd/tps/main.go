@@ -21,7 +21,7 @@ var proxyTarget string
 var databaseDSN string
 var templatePath string
 
-var logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true}))
+var logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 func main() {
 	fmt.Printf("Turnstile Proxy Server, build %s\n\n", version.Version)
