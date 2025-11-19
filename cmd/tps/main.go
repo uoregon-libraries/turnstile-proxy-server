@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"turnstile-proxy-server/internal/db"
 	"turnstile-proxy-server/internal/templates"
 	"turnstile-proxy-server/internal/version"
@@ -13,6 +12,16 @@ import (
 	"github.com/gin-gonic/gin"
 	sloggin "github.com/samber/slog-gin"
 )
+
+var bindAddr string
+var turnstileSecretKey string
+var turnstileSiteKey string
+var jwtSigningKey string
+var proxyTarget string
+var databaseDSN string
+var templatePath string
+
+var logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true}))
 
 func main() {
 	fmt.Printf("Turnstile Proxy Server, build %s\n\n", version.Version)
@@ -47,39 +56,7 @@ func help() {
 }
 
 func serve() {
-	var logOpts = &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true}
-	var logger = slog.New(slog.NewTextHandler(os.Stdout, logOpts))
-
-	var bindAddr = os.Getenv("BIND_ADDR")
-	var turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")
-	var turnstileSiteKey = os.Getenv("TURNSTILE_SITE_KEY")
-	var jwtSigningKey = os.Getenv("JWT_SIGNING_KEY")
-	var proxyTarget = os.Getenv("PROXY_TARGET")
-	var databaseDSN = os.Getenv("DATABASE_DSN")
-
-	var errs []string
-	if bindAddr == "" {
-		errs = append(errs, "BIND_ADDR is not set")
-	}
-	if turnstileSecretKey == "" {
-		errs = append(errs, "TURNSTILE_SECRET_KEY is not set")
-	}
-	if turnstileSiteKey == "" {
-		errs = append(errs, "TURNSTILE_SITE_KEY is not set")
-	}
-	if jwtSigningKey == "" {
-		errs = append(errs, "JWT_SIGNING_KEY is not set")
-	}
-	if proxyTarget == "" {
-		errs = append(errs, "PROXY_TARGET is not set")
-	}
-	if databaseDSN == "" {
-		errs = append(errs, "DATABASE_DSN is not set")
-	}
-	if len(errs) != 0 {
-		logger.Error("Cannot start server", "error", strings.Join(errs, "; "))
-		os.Exit(1)
-	}
+	getenv()
 
 	var store, err = db.NewStore(databaseDSN, logger)
 	if err != nil {
