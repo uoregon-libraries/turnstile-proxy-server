@@ -148,6 +148,10 @@ func (s *Server) LoadCustomTemplates(templatePath string) {
 	}
 
 	var err = filepath.Walk(templatePath, func(pth string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
 		if !info.Mode().IsRegular() {
 			return err
 		}
