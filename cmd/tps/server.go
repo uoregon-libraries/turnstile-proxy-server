@@ -360,6 +360,7 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	}
 
 	var cachedReq = cachedReqInterface.(*cachedRequest)
+	s.logger.Debug("Replaying request", "Method", cachedReq.Method, "URL", cachedReq.URL)
 
 	var req, reqErr = http.NewRequest(cachedReq.Method, cachedReq.URL.String(), bytes.NewReader(cachedReq.Body))
 	if reqErr != nil {
