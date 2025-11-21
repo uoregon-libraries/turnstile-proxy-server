@@ -47,6 +47,7 @@ func printUsage() {
 
 func help() {
 	fmt.Println("Configuration:")
+	fmt.Println(`- GIN_MODE (optional): "debug" or "release", defaults to "debug".`)
 	fmt.Println(`- BIND_ADDR (required): address TPS listens on, e.g., ":8080" to listen on all IPs at port 8080`)
 	fmt.Println("- TURNSTILE_SECRET_KEY (required): your Turnstile secret key")
 	fmt.Println("- TURNSTILE_SITE_KEY (required): your Turnstile site key")
