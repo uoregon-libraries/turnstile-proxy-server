@@ -177,7 +177,7 @@ func (s *Server) Run(addr string) error {
 }
 
 func (s *Server) getTemplate(r *http.Request, shortname string) string {
-	var host = r.Host
+	var host = r.URL.Hostname()
 	var path = r.URL.Path
 
 	// Clean the path to prevent directory traversal issues
