@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -58,25 +59,19 @@ type Server struct {
 	templates     map[string]string
 }
 
-// NewServer creates and configures a new Server instance. Turnstile settings
-// are pre-filled with test values for an "always pass" challenge, and the
-// logger is set up as a discard-everything logger. Use the various SetX
-// methods to change these settings.
-func NewServer(router *gin.Engine, proxyTarget string, db *db.Store) *Server {
+// NewServer creates and configures a new Server instance. You must manually
+// set the proxy target and JWT signing keys. The Turnstile settings are
+// pre-filled with test values for an "always pass" challenge, and the logger
+// is set up as a discard-everything logger. Use the various SetX methods to
+// change these settings.
+func NewServer(router *gin.Engine, db *db.Store) *Server {
 	var requestCache = cache.New(5*time.Minute, 10*time.Minute)
-
-	var parsedURL, err = url.Parse(proxyTarget)
-	if err != nil {
-		logger.Error("Could not parse proxy target URL", "error", err)
-		return nil
-	}
 
 	var render = multitemplate.NewRenderer()
 
 	router.HTMLRender = render
 	var s = &Server{
 		r:            router,
-		proxyTarget:  parsedURL,
 		db:           db,
 		render:       render,
 		siteKey:      "1x00000000000000000000AA",
@@ -104,6 +99,26 @@ func (s *Server) SetSecretKey(k string) *Server {
 // SetSiteKey sets the turnstile site key and returns s for chaining
 func (s *Server) SetSiteKey(k string) *Server {
 	s.siteKey = k
+	return s
+}
+
+// SetProxyTarget parses the given target URL and stores it. If there are any
+// parse errors, this will panic, as the server can't function without a valid
+// proxy target.
+func (s *Server) SetProxyTarget(proxyTarget string) *Server {
+	var parsedURL, err = url.Parse(proxyTarget)
+	if err != nil {
+		panic(fmt.Sprintf("invalid proxy target %q: %s", proxyTarget, err))
+	}
+
+	s.proxyTarget = parsedURL
+	return s
+}
+
+// SetJWTSigningKey stores the given key for our tokens, which are used to tell
+// if a user has already completed a challenge.
+func (s *Server) SetJWTSigningKey(k string) *Server {
+	s.jwtSigningKey = []byte(k)
 	return s
 }
 
@@ -172,6 +187,12 @@ func (s *Server) LoadCustomTemplates(templatePath string) {
 
 // Run starts the server listening on the configured address
 func (s *Server) Run(addr string) error {
+	if len(s.jwtSigningKey) == 0 {
+		return errors.New("empty JWT signing key")
+	}
+	if s.proxyTarget == nil {
+		return errors.New("empty proxy target")
+	}
 	s.r.HTMLRender = s.render
 	return s.r.Run(addr)
 }
@@ -205,7 +226,7 @@ func (s *Server) getTemplate(r *http.Request, shortname string) string {
 	}
 
 	s.logger.Debug("No custom template found, returning default")
-	return "core/"+shortname
+	return "core/" + shortname
 }
 
 func (s *Server) handleProxy(c *gin.Context) {

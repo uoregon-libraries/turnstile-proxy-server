@@ -72,9 +72,11 @@ func serve() {
 	router.Use(sloggin.New(ginLog))
 	router.Use(gin.Recovery())
 
-	var server = NewServer(router, proxyTarget, store).
+	var server = NewServer(router, store).
 		SetSecretKey(turnstileSecretKey).
 		SetSiteKey(turnstileSiteKey).
+		SetProxyTarget(proxyTarget).
+		SetJWTSigningKey(jwtSigningKey).
 		SetLogger(logger.With("log.source", "main.Server"))
 
 	server.LoadCoreTemplates("internal/templates/*.go.html", templates.FS)
