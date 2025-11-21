@@ -16,7 +16,8 @@ up. Once set, you can simply compile (with `make`) and run.
   anybody but TPS devs.
 - `BIND_ADDR`: What address and port will TPS listen on?
 - `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` are set to whatever keys you
-  get from Cloudflare for your turnstile widget.
+  get from Cloudflare for your turnstile widget, or use test site/secret keys
+  from the [Turnstile testing][1] documentation.
 - `JWT_SIGNING_KEY` should be a long string that can't be guessed.
 - `PROXY_TARGET`: the base URL to the protected service's *internal* listener.
   Must like your value for nginx or Caddy's proxy target, this is how TPS finds
@@ -26,6 +27,10 @@ up. Once set, you can simply compile (with `make`) and run.
   analysis. e.g., `user:pass@tcp(host:3306)/dbname?parseTime=true`.
   - The `parseTime` argument is important for something I no longer recall, but
     it really is important, so make sure you have that!
+- `TEMPLATE_PATH`: If you have custom templates, this is where they'll live.
+  See the section below on customizing the UI.
+
+[1]: <https://developers.cloudflare.com/turnstile/troubleshooting/testing/>
 
 ## Usage
 
@@ -56,3 +61,45 @@ since you'll have to rebuild the image every time you change anything.
 
 For dev, and even many production use-cases, you're better off just compiling
 the binary and shipping it.
+
+## Customize UI
+
+The basic challenge and fail pages are very generic and quite honestly ugly. If
+you need to provide a better UI, you can do so with custom templates.
+
+You can choose to set up a `TEMPLATE_PATH` to point to wherever you want to
+store these templates, or just stick with the default:
+`/var/local/tps/templates`.
+
+Within your template path, a subdirectory is expected to be a hostname,
+excluding port, for a site that TPS sits in front of. e.g., you'd start with
+`<template path>/localhost/` when doing development.
+
+For the simplest case, just copy and adapt the `*.go.html` files in
+`internal/templates`. So you'd have `.../localhost/challenge.go.html` for
+the challenge page and `.../localhost/failed.go.html` for the failure
+page. TPS will use your custom templates for any requests the browser makes to
+localhost.
+
+**Note**: _the hostname is the **public** hostname, not the internal hostname. If
+TPS is listening to `front.x.edu` and proxying to `backend.x.edu`, the template
+hostname directory is `front.x.edu`, never `backend.x.edu`._
+
+### Matching URL Paths
+
+Under the hostname directory, you can have subdirectories to match specific
+paths in a URL. TPS will match the most specific path it can when looking for
+custom templates.
+
+So if TPS is protecting everything under `https://front.x/collections/<name>/search`
+you could have `<template path>/front.x/challenge.go.html` as your catch-all
+challenge, and then individually themed challenges under `<template
+path>/front.x/collections/breadmaking/challenge.go.html` for your "Breadmaking"
+collection's custom challenge. You can go as deep as you like for the path
+names.
+
+### Updating Templates
+
+If you need to change a template, you must restart TPS in a production
+environment. Templates will auto-reload on change in dev, but not in
+production!
