@@ -195,6 +195,15 @@ func (s *Server) Run(addr string) error {
 		return errors.New("empty proxy target")
 	}
 	s.r.HTMLRender = s.render
+
+	logger.Debug(
+		fmt.Sprintf("s.r.Run(%q)", bindAddr),
+		"s.siteKey", s.siteKey,
+		"s.secretKey", s.secretKey,
+		"s.jwtSigningKey", s.jwtSigningKey,
+		"s.proxyTarget", s.proxyTarget,
+		"s.templates", s.templates,
+	)
 	return s.r.Run(addr)
 }
 
@@ -231,6 +240,7 @@ func (s *Server) getTemplate(r *http.Request, shortname string) string {
 }
 
 func (s *Server) handleProxy(c *gin.Context) {
+	s.logger.Debug("handleProxy: checking for JWT")
 	var cookie, err = c.Cookie(cookieName)
 	if err == nil {
 		var _, parseErr = jwt.Parse(cookie, func(token *jwt.Token) (interface{}, error) {
@@ -241,7 +251,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 		})
 
 		if parseErr == nil {
-			s.logger.Info("JWT is valid, proxying request")
+			s.logger.Info("JWT is valid, proxying request", "URL", c.Request.URL.String())
 			s.db.LogRequest(db.RequestLog{
 				ClientIP:      c.ClientIP(),
 				Timestamp:     time.Now(),
@@ -255,6 +265,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 	}
 
 	// Not a valid session, check if this is a verification attempt
+	s.logger.Debug("handleProxy: checking request for turnstile POST")
 	var turnstileResponse = c.PostForm("cf-turnstile-response")
 	var requestID = c.PostForm("request_id")
 	if c.Request.Method == "POST" && turnstileResponse != "" && requestID != "" {
@@ -303,6 +314,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 	}
 
 	// This is a new request, cache it and serve the challenge
+	s.logger.Debug("handleProxy: new request, presenting challenge")
 	var newRequestID = requestid.New()
 	var body, readErr = io.ReadAll(c.Request.Body)
 	if readErr != nil {
@@ -321,7 +333,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 	c.HTML(http.StatusOK, s.getTemplate(c.Request, "challenge"), gin.H{
 		"SiteKey":    s.siteKey,
 		"RequestID":  newRequestID,
-		"PostAction": c.Request.URL.Path,
+		"PostAction": c.Request.URL,
 	})
 }
 
@@ -361,6 +373,7 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	}
 
 	var cachedReq = cachedReqInterface.(*cachedRequest)
+	s.logger.Debug("Replaying request", "Method", cachedReq.Method, "URL", cachedReq.URL)
 
 	var req, reqErr = http.NewRequest(cachedReq.Method, cachedReq.URL.String(), bytes.NewReader(cachedReq.Body))
 	if reqErr != nil {
