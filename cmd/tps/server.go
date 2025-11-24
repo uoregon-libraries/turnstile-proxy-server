@@ -62,7 +62,7 @@ type Server struct {
 // NewServer creates and configures a new Server instance. You must manually
 // set the proxy target and JWT signing keys. The Turnstile settings are
 // pre-filled with test values for an "always pass" challenge, and the logger
-// is set up as a discard-everything logger. Use the various SetX methods to
+// is set to [slog.Default]. Use the various SetX methods to
 // change these settings.
 func NewServer(router *gin.Engine, db *db.Store) *Server {
 	var requestCache = cache.New(5*time.Minute, 10*time.Minute)
@@ -74,6 +74,7 @@ func NewServer(router *gin.Engine, db *db.Store) *Server {
 		r:            router,
 		db:           db,
 		render:       render,
+		logger:       slog.Default(),
 		siteKey:      "1x00000000000000000000AA",
 		secretKey:    "1x0000000000000000000000000000000AA",
 		requestCache: requestCache,
