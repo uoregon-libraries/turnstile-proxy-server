@@ -333,7 +333,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 	c.HTML(http.StatusOK, s.getTemplate(c.Request, "challenge"), gin.H{
 		"SiteKey":    s.siteKey,
 		"RequestID":  newRequestID,
-		"PostAction": c.Request.URL.Path,
+		"PostAction": c.Request.URL,
 	})
 }
 
