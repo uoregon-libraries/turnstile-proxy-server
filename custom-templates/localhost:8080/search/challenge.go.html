@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Custom Turnstile Challenge</title>
+</head>
+<body>
+    <h1>You want to search? You best be a hooman!</h1>
+
+    <form action="{{.PostAction}}" method="POST">
+      <input type="hidden" name="request_id" value="{{.RequestID}}" />
+      <div class="cf-turnstile" data-sitekey="{{.SiteKey}}" data-callback="onSuccess"></div>
+    </form>
+    <script>
+      function onSuccess(token) {
+        document.querySelector('form').submit();
+      }
+    </script>
+</body>
+</html>

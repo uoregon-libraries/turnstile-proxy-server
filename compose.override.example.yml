@@ -1,0 +1,15 @@
+services:
+  db:
+    ports:
+      - "3306:3306"
+
+  tps:
+    environment:
+      TURNSTILE_SITE_KEY: "foo"
+      TURNSTILE_SECRET_KEY: "bar"
+      JWT_SIGNING_KEY: "shhhhhh-this-is-very-secret"
+      PROXY_TARGET: "https://somewhere.out-there"
+    volumes:
+      - ./custom-templates:/var/local/tps/templates
+    ports:
+      - 8080:8080
