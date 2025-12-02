@@ -1,11 +1,24 @@
 {
 	http_port 8080
 	debug
+  servers {
+    trusted_proxies static {$TRUSTED_PROXIES:private_ranges}
+    trusted_proxies_strict
+    client_ip_headers X-Real-IP X-Forwarded-For
+  }
 }
 
 :8080 {
 	log
 
-	reverse_proxy /protected/* tps:8080
-	reverse_proxy * app:8080
+  @search {
+    path /protected/*
+  }
+  handle @search {
+    reverse_proxy tps:8080
+  }
+
+  handle {
+    reverse_proxy app:8080
+  }
 }
