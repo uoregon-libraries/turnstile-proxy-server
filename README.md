@@ -54,6 +54,26 @@ embedded in the binary so that you don't need to copy them around.
 Also take a look at the example app (`example/...`) for details of how this
 could look in a production stack.
 
+## Real-world usage
+
+TPS was built to solve a real-world problem: our digital exhibit platform was
+wrecked by bot traffic (50% uptime on a *good* day). Misbehaving bots rotated
+their IP addresses per request, ignored our sitemap, ignored robots.txt, etc.
+
+Once we had 20 or so bots each making several requests per minute to our most
+expensive endpoints (search and facets), the stack just couldn't keep up. It
+was hosted on a shared setup with fairly low resources because it wasn't
+expected to see insane levels of traffic.
+
+Building TPS and putting it in front of search and facet requests solved the
+resource problems on day 1. Bots still get to crawl our resources, just not our
+search pages. Our site stays up. Win-win.
+
+Take a look at our [Digital Exhibits Github project][2] for details of how we
+used TPS to basically save a real application.
+
+[2]: <https://github.com/uoregon-libraries/digital-exhibits-spotlight>
+
 ## Docker Image
 
 The docker image is set up for production use, and won't be suitable for dev
