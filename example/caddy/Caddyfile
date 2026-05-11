@@ -1,6 +1,6 @@
 {
-	http_port 8080
-	debug
+  http_port 8080
+  debug
   servers {
     trusted_proxies static {$TRUSTED_PROXIES:private_ranges}
     trusted_proxies_strict
@@ -12,7 +12,7 @@
 # instance, which decides per-request which backend to proxy to based on
 # its PROXY_TARGETS config. Everything else goes straight to the app.
 :8080 {
-	log
+  log
 
   @protected {
     path /protected/* /static-protected/*
@@ -32,7 +32,7 @@
 # challenge. This port is not published in compose.yml, so it is only
 # reachable from inside the compose network.
 :8081 {
-	log
+  log
 
   root * /srv
   file_server
