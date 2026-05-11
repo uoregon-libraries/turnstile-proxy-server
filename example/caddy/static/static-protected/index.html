@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Statically-Protected Page</title>
+</head>
+<body>
+    <h1>This is a statically-protected page.</h1>
+    <p>
+        This file is served directly by Caddy's <code>file_server</code>, not
+        by the backend app. You only see it after passing the Turnstile
+        challenge from TPS, even though TPS never touches the file itself.
+    </p>
+    <p><a href="/">Back to public page</a></p>
+</body>
+</html>

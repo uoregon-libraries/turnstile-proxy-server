@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"turnstile-proxy-server/internal/db"
@@ -43,6 +44,13 @@ type cloudflareVerifyResponse struct {
 	Hostname    string   `json:"hostname"`
 }
 
+// parsedProxyRoute is the runtime form of a PROXY_TARGETS entry: a request
+// path prefix paired with the parsed backend URL.
+type parsedProxyRoute struct {
+	Prefix string
+	Target *url.URL
+}
+
 // Server wraps a [gin.Engine], encapsulating the handlers' logic and data for
 // presenting the turnstile challenge, verifying the challenge, and finally
 // proxying successful requests
@@ -55,7 +63,7 @@ type Server struct {
 	secretKey     string
 	jwtSigningKey []byte
 	requestCache  *cache.Cache
-	proxyTarget   *url.URL
+	proxyTargets  []parsedProxyRoute
 	templates     map[string]string
 }
 
@@ -103,17 +111,41 @@ func (s *Server) SetSiteKey(k string) *Server {
 	return s
 }
 
-// SetProxyTarget parses the given target URL and stores it. If there are any
-// parse errors, this will panic, as the server can't function without a valid
-// proxy target.
-func (s *Server) SetProxyTarget(proxyTarget string) *Server {
-	var parsedURL, err = url.Parse(proxyTarget)
-	if err != nil {
-		panic(fmt.Sprintf("invalid proxy target %q: %s", proxyTarget, err))
-	}
+// SetProxyTarget is a convenience wrapper for the single-backend case: it
+// installs the given URL as a catch-all route under prefix "/".
+func (s *Server) SetProxyTarget(target string) *Server {
+	return s.SetProxyTargets([]proxyRoute{{Prefix: "/", Target: target}})
+}
 
-	s.proxyTarget = parsedURL
+// SetProxyTargets parses each route's target URL, sorts the routes by prefix
+// length (longest first) so that a longest-match lookup is just a linear
+// scan, and stores them. Panics on any unparseable URL because the server
+// cannot function without valid targets.
+func (s *Server) SetProxyTargets(routes []proxyRoute) *Server {
+	var parsed = make([]parsedProxyRoute, 0, len(routes))
+	for _, r := range routes {
+		var u, err = url.Parse(r.Target)
+		if err != nil {
+			panic(fmt.Sprintf("invalid proxy target %q: %s", r.Target, err))
+		}
+		parsed = append(parsed, parsedProxyRoute{Prefix: r.Prefix, Target: u})
+	}
+	sort.SliceStable(parsed, func(i, j int) bool {
+		return len(parsed[i].Prefix) > len(parsed[j].Prefix)
+	})
+	s.proxyTargets = parsed
 	return s
+}
+
+// pickTarget returns the backend URL for the longest configured prefix that
+// matches reqPath, or nil if no prefix matches.
+func (s *Server) pickTarget(reqPath string) *url.URL {
+	for _, r := range s.proxyTargets {
+		if strings.HasPrefix(reqPath, r.Prefix) {
+			return r.Target
+		}
+	}
+	return nil
 }
 
 // SetJWTSigningKey stores the given key for our tokens, which are used to tell
@@ -191,8 +223,8 @@ func (s *Server) Run(addr string) error {
 	if len(s.jwtSigningKey) == 0 {
 		return errors.New("empty JWT signing key")
 	}
-	if s.proxyTarget == nil {
-		return errors.New("empty proxy target")
+	if len(s.proxyTargets) == 0 {
+		return errors.New("no proxy targets configured")
 	}
 	s.r.HTMLRender = s.render
 
@@ -201,7 +233,7 @@ func (s *Server) Run(addr string) error {
 		"s.siteKey", s.siteKey,
 		"s.secretKey", s.secretKey,
 		"s.jwtSigningKey", s.jwtSigningKey,
-		"s.proxyTarget", s.proxyTarget,
+		"s.proxyTargets", s.proxyTargets,
 		"s.templates", s.templates,
 	)
 	return s.r.Run(addr)
@@ -338,10 +370,16 @@ func (s *Server) handleProxy(c *gin.Context) {
 }
 
 func (s *Server) replayRequest(c *gin.Context, req *http.Request) {
+	var target = s.pickTarget(req.URL.Path)
+	if target == nil {
+		s.logger.Warn("No proxy target matches request path", "path", req.URL.Path)
+		c.String(http.StatusBadGateway, "No proxy target configured for this request")
+		return
+	}
 	var director = func(req *http.Request) {
-		req.URL.Scheme = s.proxyTarget.Scheme
-		req.URL.Host = s.proxyTarget.Host
-		req.Host = s.proxyTarget.Host
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.Host = target.Host
 	}
 	var proxy = &httputil.ReverseProxy{Director: director}
 	proxy.ServeHTTP(c.Writer, req)

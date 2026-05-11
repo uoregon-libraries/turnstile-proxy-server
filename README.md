@@ -19,10 +19,16 @@ up. Once set, you can simply compile (with `make`) and run.
   get from Cloudflare for your turnstile widget, or use test site/secret keys
   from the [Turnstile testing][1] documentation.
 - `JWT_SIGNING_KEY` should be a long string that can't be guessed.
-- `PROXY_TARGET`: the base URL to the protected service's *internal* listener.
-  Must like your value for nginx or Caddy's proxy target, this is how TPS finds
-  your service so it can proxy to protected content after a turnstile challenge
-  is successful.
+- `PROXY_TARGETS`: comma-separated list of `prefix=url` entries selecting a
+  backend by request path prefix. Longest matching prefix wins. e.g.
+  `"/protected/=http://app:8080,/static-protected/=http://caddy:8081"`. Use
+  `/` as a catch-all prefix if you want a single fallback.
+- `PROXY_TARGET`: the legacy single-target form, equivalent to
+  `PROXY_TARGETS="/=<url>"`. Either `PROXY_TARGETS` or `PROXY_TARGET` must be
+  set; if both are set, `PROXY_TARGETS` wins and `PROXY_TARGET` is ignored.
+  Like your value for nginx or Caddy's proxy target, the target URL is how TPS
+  finds your service so it can proxy to protected content after a turnstile
+  challenge is successful.
 - `DATABASE_DSN`: DSN for the MariaDB database, which stores various stats for
   analysis. e.g., `user:pass@tcp(host:3306)/dbname?parseTime=true`.
   - The `parseTime` argument is important for something I no longer recall, but

@@ -11,8 +11,16 @@ TURNSTILE_SECRET_KEY=bar
 # Choose something long and secure here for encrypting the JWT cookie
 JWT_SIGNING_KEY=shhhhhh-this-is-very-secret
 
-# What is the base URL that TPS is protecting? This should be a *private* URL,
-# not a public URL, as Caddy and TPS should be fronting the protected app.
+# Backend(s) that TPS proxies verified requests to. These should be *private*
+# URLs, not public ones, as Caddy and TPS should be fronting the protected
+# apps. Set either PROXY_TARGETS (multi-backend) or PROXY_TARGET (single
+# backend) -- if both are set, PROXY_TARGETS wins and PROXY_TARGET is ignored.
+#
+# PROXY_TARGETS is a comma-separated list of "prefix=url" entries. The longest
+# request-path prefix that matches wins. Use "/" as a catch-all.
+PROXY_TARGETS="/protected/=http://app:8080,/static-protected/=http://caddy:8081"
+
+# Single-backend, legacy form. Equivalent to PROXY_TARGETS="/=<url>".
 PROXY_TARGET="http://localhost"
 
 # Where will you record the stats? This is a DSN to a MariaDB database.

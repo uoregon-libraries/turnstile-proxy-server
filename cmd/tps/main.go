@@ -13,11 +13,18 @@ import (
 	sloggin "github.com/samber/slog-gin"
 )
 
+// proxyRoute is one entry of the parsed PROXY_TARGETS config: a request path
+// prefix and the backend URL string to proxy matching requests to.
+type proxyRoute struct {
+	Prefix string
+	Target string
+}
+
 var bindAddr string
 var turnstileSecretKey string
 var turnstileSiteKey string
 var jwtSigningKey string
-var proxyTarget string
+var proxyTargets []proxyRoute
 var databaseDSN string
 var templatePath string
 
@@ -52,7 +59,11 @@ func help() {
 	fmt.Println("- TURNSTILE_SECRET_KEY (required): your Turnstile secret key")
 	fmt.Println("- TURNSTILE_SITE_KEY (required): your Turnstile site key")
 	fmt.Println("- JWT_SIGNING_KEY (required): a key to sign JWTs with; pick something long and random")
-	fmt.Println("- PROXY_TARGET (required): the internal URL that TPS will be reverse-proxying")
+	fmt.Println("- PROXY_TARGETS: comma-separated list of \"prefix=url\" entries selecting a backend by request path")
+	fmt.Println("                 prefix, e.g., \"/protected/=http://app:8080,/static-protected/=http://caddy:8081\".")
+	fmt.Println("                 Longest matching prefix wins. Either PROXY_TARGETS or PROXY_TARGET must be set.")
+	fmt.Println("- PROXY_TARGET: legacy single-target form, equivalent to PROXY_TARGETS=\"/=<url>\". Ignored if")
+	fmt.Println("                 PROXY_TARGETS is set.")
 	fmt.Println("- DATABASE_DSN (required): DSN for the MariaDB database, e.g., user:pass@tcp(host:3306)/dbname?parseTime=true")
 	fmt.Println("- TEMPLATE_PATH (optional): path to external templates, defaults to /var/local/tps/templates")
 }
@@ -75,7 +86,7 @@ func serve() {
 	var server = NewServer(router, store).
 		SetSecretKey(turnstileSecretKey).
 		SetSiteKey(turnstileSiteKey).
-		SetProxyTarget(proxyTarget).
+		SetProxyTargets(proxyTargets).
 		SetJWTSigningKey(jwtSigningKey).
 		SetLogger(logger.With("log.source", "main.Server"))
 

@@ -20,12 +20,18 @@ services:
     volumes:
       - db:/var/lib/mysql
 
+  # Single TPS instance fronting two backends:
+  #   /protected/*         -> the app
+  #   /static-protected/*  -> Caddy's internal :8081 listener, which serves
+  #                           static files with no Turnstile rule (so a
+  #                           verified replay does not loop back into a
+  #                           challenge).
   tps:
     build: ..
     environment:
       GIN_MODE: "release"
       BIND_ADDR: ":8080"
-      PROXY_TARGET: "http://app:8080"
+      PROXY_TARGETS: "/protected/=http://app:8080,/static-protected/=http://caddy:8081"
       DATABASE_DSN: "tps:tps@tcp(db:3306)/tps?parseTime=true"
     depends_on:
       app:

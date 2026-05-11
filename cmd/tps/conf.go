@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +13,6 @@ func getenv() {
 	turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")
 	turnstileSiteKey = os.Getenv("TURNSTILE_SITE_KEY")
 	jwtSigningKey = os.Getenv("JWT_SIGNING_KEY")
-	proxyTarget = os.Getenv("PROXY_TARGET")
 	databaseDSN = os.Getenv("DATABASE_DSN")
 	templatePath = os.Getenv("TEMPLATE_PATH")
 
@@ -28,9 +29,26 @@ func getenv() {
 	if jwtSigningKey == "" {
 		errs = append(errs, "JWT_SIGNING_KEY is not set")
 	}
-	if proxyTarget == "" {
-		errs = append(errs, "PROXY_TARGET is not set")
+
+	var rawTargets = os.Getenv("PROXY_TARGETS")
+	var legacyTarget = os.Getenv("PROXY_TARGET")
+	switch {
+	case rawTargets != "":
+		var routes, err = parseProxyTargets(rawTargets)
+		if err != nil {
+			errs = append(errs, "PROXY_TARGETS: "+err.Error())
+		} else {
+			proxyTargets = routes
+		}
+		if legacyTarget != "" {
+			logger.Warn("Both PROXY_TARGETS and PROXY_TARGET are set; PROXY_TARGET is ignored")
+		}
+	case legacyTarget != "":
+		proxyTargets = []proxyRoute{{Prefix: "/", Target: legacyTarget}}
+	default:
+		errs = append(errs, "neither PROXY_TARGETS nor PROXY_TARGET is set")
 	}
+
 	if databaseDSN == "" {
 		errs = append(errs, "DATABASE_DSN is not set")
 	}
@@ -48,4 +66,50 @@ func getenv() {
 		logger.Error("Cannot start server", "error", strings.Join(errs, "; "))
 		os.Exit(1)
 	}
+}
+
+// parseProxyTargets parses the comma-separated "prefix=url[,prefix=url...]"
+// format of the PROXY_TARGETS env var. Entries with whitespace around the
+// commas or equals are tolerated. Each target URL must parse with a scheme
+// and host. Duplicate prefixes are rejected.
+func parseProxyTargets(raw string) ([]proxyRoute, error) {
+	var entries = strings.Split(raw, ",")
+	var routes = make([]proxyRoute, 0, len(entries))
+	var seen = make(map[string]bool, len(entries))
+
+	for i, entry := range entries {
+		var trimmed = strings.TrimSpace(entry)
+		if trimmed == "" {
+			return nil, fmt.Errorf("entry %d is empty", i+1)
+		}
+
+		var rawPrefix, rawTarget, ok = strings.Cut(trimmed, "=")
+		if !ok {
+			return nil, fmt.Errorf("entry %d %q is missing '='", i+1, trimmed)
+		}
+		var prefix = strings.TrimSpace(rawPrefix)
+		var target = strings.TrimSpace(rawTarget)
+		if prefix == "" {
+			return nil, fmt.Errorf("entry %d has an empty prefix", i+1)
+		}
+		if target == "" {
+			return nil, fmt.Errorf("entry %d (prefix %q) has an empty target URL", i+1, prefix)
+		}
+		if seen[prefix] {
+			return nil, fmt.Errorf("prefix %q is defined more than once", prefix)
+		}
+
+		var parsed, err = url.Parse(target)
+		if err != nil {
+			return nil, fmt.Errorf("entry %d (prefix %q): invalid target URL %q: %s", i+1, prefix, target, err)
+		}
+		if parsed.Scheme == "" || parsed.Host == "" {
+			return nil, fmt.Errorf("entry %d (prefix %q): target URL %q must include scheme and host", i+1, prefix, target)
+		}
+
+		seen[prefix] = true
+		routes = append(routes, proxyRoute{Prefix: prefix, Target: target})
+	}
+
+	return routes, nil
 }

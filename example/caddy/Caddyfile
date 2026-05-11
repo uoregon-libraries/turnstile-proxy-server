@@ -8,17 +8,32 @@
   }
 }
 
+# Public-facing listener. Both protected prefixes route to the same TPS
+# instance, which decides per-request which backend to proxy to based on
+# its PROXY_TARGETS config. Everything else goes straight to the app.
 :8080 {
 	log
 
-  @search {
-    path /protected/*
+  @protected {
+    path /protected/* /static-protected/*
   }
-  handle @search {
+  handle @protected {
     reverse_proxy tps:8080
   }
 
   handle {
     reverse_proxy app:8080
   }
+}
+
+# Internal-only listener used as the /static-protected/* backend in TPS's
+# PROXY_TARGETS. It serves the static assets directly with no Turnstile rule,
+# so when TPS replays a verified request here it does not loop back into a
+# challenge. This port is not published in compose.yml, so it is only
+# reachable from inside the compose network.
+:8081 {
+	log
+
+  root * /srv
+  file_server
 }
