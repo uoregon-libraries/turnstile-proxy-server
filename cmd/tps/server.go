@@ -29,6 +29,19 @@ const (
 	cookieName = "tps-jwt"
 )
 
+// trustedProxyCIDRs lists the networks from which TPS will honor
+// X-Forwarded-* headers. TPS is intended to run behind a reverse proxy on a
+// private network and must never be exposed to the public internet directly,
+// so only loopback and RFC 1918 / RFC 4193 ranges are trusted.
+var trustedProxyCIDRs = []string{
+	"127.0.0.0/8",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"::1/128",
+	"fc00::/7",
+}
+
 type cachedRequest struct {
 	Method  string
 	Body    []byte
@@ -78,6 +91,11 @@ func NewServer(router *gin.Engine, db *db.Store) *Server {
 	var render = multitemplate.NewRenderer()
 
 	router.HTMLRender = render
+	var err = router.SetTrustedProxies(trustedProxyCIDRs)
+	if err != nil {
+		panic(fmt.Sprintf("invalid trusted proxy CIDR: %s", err))
+	}
+
 	var s = &Server{
 		r:            router,
 		db:           db,
