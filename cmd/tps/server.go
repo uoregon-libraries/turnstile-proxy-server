@@ -283,7 +283,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 		})
 
 		if parseErr == nil {
-			s.logger.Info("JWT is valid, proxying request", "URL", c.Request.URL.String())
+			s.logger.Debug("JWT is valid, proxying request", "URL", c.Request.URL.String())
 			s.db.LogRequest(db.RequestLog{
 				ClientIP:      c.ClientIP(),
 				Timestamp:     time.Now(),
@@ -293,7 +293,10 @@ func (s *Server) handleProxy(c *gin.Context) {
 			s.replayRequest(c, c.Request)
 			return
 		}
-		s.logger.Warn("Failed to parse JWT", "error", parseErr)
+
+		s.logger.Warn("JWT was present but invalid, presenting challenge", "error", parseErr)
+	} else if err == http.ErrNoCookie {
+		s.logger.Debug("No JWT, presenting challenge")
 	}
 
 	// Not a valid session, check if this is a verification attempt
@@ -301,7 +304,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 	var turnstileResponse = c.PostForm("cf-turnstile-response")
 	var requestID = c.PostForm("request_id")
 	if c.Request.Method == "POST" && turnstileResponse != "" && requestID != "" {
-		s.logger.Info("Received turnstile response, attempting verification", "requestID", requestID)
+		s.logger.Debug("Received turnstile response, attempting verification", "requestID", requestID)
 
 		var verifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 		var client = &http.Client{Timeout: 10 * time.Second}
@@ -322,7 +325,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 		}
 
 		if verifyResp.Success {
-			s.logger.Info("Turnstile verification successful")
+			s.logger.Debug("Turnstile verification successful")
 			s.db.LogRequest(db.RequestLog{
 				ClientIP:              c.ClientIP(),
 				Timestamp:             time.Now(),
