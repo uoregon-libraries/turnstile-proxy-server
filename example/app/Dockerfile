@@ -1,4 +1,4 @@
-FROM golang:1-alpine AS build
+FROM docker.io/golang:1-alpine AS build
 
 WORKDIR /app
 ADD go.mod /app

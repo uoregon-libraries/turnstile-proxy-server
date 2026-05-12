@@ -3,7 +3,7 @@ services:
     build: ./app
 
   db:
-    image: mariadb:lts
+    image: docker.io/mariadb:lts
     environment:
       MYSQL_DATABASE: tps
       MYSQL_USER: tps
