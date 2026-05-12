@@ -23,7 +23,8 @@ PROXY_TARGETS="/protected/=http://app:8080,/static-protected/=http://caddy:8081"
 # Single-backend, legacy form. Equivalent to PROXY_TARGETS="/=<url>".
 PROXY_TARGET="http://localhost"
 
-# Where will you record the stats? This is a DSN to a MariaDB database.
+# Where will you record the stats? This is a DSN to a MariaDB database. If
+# unset, request logging is disabled and TPS runs without a database.
 DATABASE_DSN="user:pass@tcp(host:3306)/dbname?parseTime=true"
 
 # Where are custom templates (if any) found?

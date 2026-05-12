@@ -70,17 +70,25 @@ func help() {
 	fmt.Println("                 Longest matching prefix wins. Either PROXY_TARGETS or PROXY_TARGET must be set.")
 	fmt.Println("- PROXY_TARGET: legacy single-target form, equivalent to PROXY_TARGETS=\"/=<url>\". Ignored if")
 	fmt.Println("                 PROXY_TARGETS is set.")
-	fmt.Println("- DATABASE_DSN (required): DSN for the MariaDB database, e.g., user:pass@tcp(host:3306)/dbname?parseTime=true")
+	fmt.Println("- DATABASE_DSN (optional): DSN for the MariaDB database, e.g., user:pass@tcp(host:3306)/dbname?parseTime=true.")
+	fmt.Println("                            If unset, request logging is disabled.")
 	fmt.Println("- TEMPLATE_PATH (optional): path to external templates, defaults to /var/local/tps/templates")
 }
 
 func serve() {
 	getenv()
 
-	var store, err = db.NewStore(databaseDSN, logger)
-	if err != nil {
-		logger.Error("Cannot open database", "error", err)
-		os.Exit(1)
+	var store db.Store
+	if databaseDSN == "" {
+		logger.Info("DATABASE_DSN is not set; request logging is disabled")
+		store = db.NewNoopStore()
+	} else {
+		var err error
+		store, err = db.NewStore(databaseDSN, logger)
+		if err != nil {
+			logger.Error("Cannot open database", "error", err)
+			os.Exit(1)
+		}
 	}
 	defer store.Close()
 
@@ -100,7 +108,7 @@ func serve() {
 	server.LoadCustomTemplates(templatePath)
 
 	logger.Info("Starting TPS", "addr", bindAddr)
-	err = server.Run(bindAddr)
+	var err = server.Run(bindAddr)
 	if err != nil {
 		logger.Error("Could not start server", "error", err)
 		os.Exit(1)

@@ -49,9 +49,6 @@ func getenv() {
 		errs = append(errs, "neither PROXY_TARGETS nor PROXY_TARGET is set")
 	}
 
-	if databaseDSN == "" {
-		errs = append(errs, "DATABASE_DSN is not set")
-	}
 	if templatePath == "" {
 		templatePath = "/var/local/tps/templates"
 	}

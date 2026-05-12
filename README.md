@@ -29,8 +29,10 @@ up. Once set, you can simply compile (with `make`) and run.
   Like your value for nginx or Caddy's proxy target, the target URL is how TPS
   finds your service so it can proxy to protected content after a turnstile
   challenge is successful.
-- `DATABASE_DSN`: DSN for the MariaDB database, which stores various stats for
-  analysis. e.g., `user:pass@tcp(host:3306)/dbname?parseTime=true`.
+- `DATABASE_DSN` (optional): DSN for the MariaDB database, which stores
+  various stats for analysis. e.g.,
+  `user:pass@tcp(host:3306)/dbname?parseTime=true`. If unset, request logging
+  is disabled.
   - The `parseTime` argument is important for something I no longer recall, but
     it really is important, so make sure you have that!
 - `TEMPLATE_PATH`: If you have custom templates, this is where they'll live.

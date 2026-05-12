@@ -71,7 +71,7 @@ type Server struct {
 	r             *gin.Engine
 	render        multitemplate.Renderer
 	logger        *slog.Logger
-	db            *db.Store
+	db            db.Store
 	siteKey       string
 	secretKey     string
 	jwtSigningKey []byte
@@ -85,7 +85,7 @@ type Server struct {
 // pre-filled with test values for an "always pass" challenge, and the logger
 // is set to [slog.Default]. Use the various SetX methods to
 // change these settings.
-func NewServer(router *gin.Engine, db *db.Store) *Server {
+func NewServer(router *gin.Engine, store db.Store) *Server {
 	var requestCache = cache.New(5*time.Minute, 10*time.Minute)
 
 	var render = multitemplate.NewRenderer()
@@ -98,7 +98,7 @@ func NewServer(router *gin.Engine, db *db.Store) *Server {
 
 	var s = &Server{
 		r:            router,
-		db:           db,
+		db:           store,
 		render:       render,
 		logger:       slog.Default(),
 		siteKey:      "1x00000000000000000000AA",

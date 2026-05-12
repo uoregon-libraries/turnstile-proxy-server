@@ -20,16 +20,21 @@ type RequestLog struct {
 	ChallengeSucceeded    bool
 }
 
-// Store is a database abstraction that provides methods for storing and
-// retrieving request logs.
-type Store struct {
+// Store records request logs. Implementations may persist to a database or
+// silently discard entries (see [NewNoopStore]).
+type Store interface {
+	LogRequest(log RequestLog) error
+	Close() error
+}
+
+type mysqlStore struct {
 	db     *sql.DB
 	logger *slog.Logger
 }
 
-// NewStore creates a new Store and initializes the database schema if it
-// doesn't already exist.
-func NewStore(dataSourceName string, logger *slog.Logger) (*Store, error) {
+// NewStore opens a MariaDB-backed [Store], pinging the server and creating
+// the request log table if it doesn't already exist.
+func NewStore(dataSourceName string, logger *slog.Logger) (Store, error) {
 	db, err := sql.Open("mysql", dataSourceName)
 	if err != nil {
 		return nil, err
@@ -38,19 +43,18 @@ func NewStore(dataSourceName string, logger *slog.Logger) (*Store, error) {
 		return nil, err
 	}
 
-	var store = &Store{db: db, logger: logger}
+	var store = &mysqlStore{db: db, logger: logger}
 	if err := store.migrate(); err != nil {
 		return nil, err
 	}
 	return store, nil
 }
 
-// Close closes the database connection.
-func (s *Store) Close() error {
+func (s *mysqlStore) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) migrate() error {
+func (s *mysqlStore) migrate() error {
 	var query = `
 	CREATE TABLE IF NOT EXISTS request_logs(
 		id INTEGER PRIMARY KEY AUTO_INCREMENT,
@@ -66,8 +70,7 @@ func (s *Store) migrate() error {
 	return err
 }
 
-// LogRequest logs a request to the database.
-func (s *Store) LogRequest(log RequestLog) error {
+func (s *mysqlStore) LogRequest(log RequestLog) error {
 	var query = `
 	INSERT INTO request_logs (client_ip, timestamp, url, had_valid_token, was_presented_challenge, challenge_succeeded)
 	VALUES (?, ?, ?, ?, ?, ?);
@@ -78,3 +81,12 @@ func (s *Store) LogRequest(log RequestLog) error {
 	}
 	return err
 }
+
+type noopStore struct{}
+
+// NewNoopStore returns a [Store] that discards every log entry. Use it when
+// no DATABASE_DSN is configured.
+func NewNoopStore() Store { return noopStore{} }
+
+func (noopStore) LogRequest(RequestLog) error { return nil }
+func (noopStore) Close() error                { return nil }
