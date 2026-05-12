@@ -5,6 +5,21 @@ services:
 
   tps:
     environment:
+      ###
+      # Test site keys adjust the behavior of the challenge
+      ###
+      #TURNSTILE_SITE_KEY: 1x00000000000000000000AA # Always passes, visible
+      #TURNSTILE_SITE_KEY: 2x00000000000000000000AB # Always fails, visible
+      #TURNSTILE_SITE_KEY: 1x00000000000000000000BB # Always passes, invisible
+      #TURNSTILE_SITE_KEY: 2x00000000000000000000BB # Always fails, invisible
+      #TURNSTILE_SITE_KEY: 3x00000000000000000000FF # Force interactive challenge, visible
+
+      ###
+      # Test secret keys adjust the behavior of the validation (after the challenge has finished)
+      ###
+      #TURNSTILE_SECRET_KEY: 1x0000000000000000000000000000000AA # Always passes validation
+      #TURNSTILE_SECRET_KEY: 2x0000000000000000000000000000000AA # Always fails validation
+
       TURNSTILE_SITE_KEY: "foo"
       TURNSTILE_SECRET_KEY: "bar"
       JWT_SIGNING_KEY: "shhhhhh-this-is-very-secret"
