@@ -365,7 +365,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 	}
 	s.requestCache.Set(newRequestID, cachedReq, cache.DefaultExpiration)
 	s.logger.Info("No/invalid JWT, serving challenge", "requestID", newRequestID)
-	c.HTML(http.StatusOK, s.getTemplate(c.Request, "challenge"), gin.H{
+	c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "challenge"), gin.H{
 		"SiteKey":    s.siteKey,
 		"RequestID":  newRequestID,
 		"PostAction": c.Request.URL,
