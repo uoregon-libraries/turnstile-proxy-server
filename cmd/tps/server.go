@@ -343,7 +343,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 				WasPresentedChallenge: true,
 				ChallengeSucceeded:    false,
 			})
-			c.HTML(http.StatusUnauthorized, s.getTemplate(c.Request, "failed"), nil)
+			c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "failed"), nil)
 		}
 		return
 	}
