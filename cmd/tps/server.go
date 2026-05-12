@@ -404,7 +404,8 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 		return
 	}
 
-	c.SetCookie(cookieName, tokenString, 3600*24, "/", "", true, true)
+	var secure = c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	c.SetCookie(cookieName, tokenString, 3600*24, "/", "", secure, true)
 
 	var cachedReqInterface, ok = s.requestCache.Get(requestID)
 	if !ok {
