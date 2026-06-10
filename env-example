@@ -29,3 +29,44 @@ DATABASE_DSN="user:pass@tcp(host:3306)/dbname?parseTime=true"
 
 # Where are custom templates (if any) found?
 TEMPLATE_PATH="/var/local/tps/templates"
+
+# How long a solved challenge stays valid, as a Go duration string ("30m",
+# "1h", "90m"). Shorter lifetimes mean bots have to re-solve (or re-buy
+# solves) more often, at the cost of legitimate users seeing the challenge
+# more often. Defaults to 4h.
+TOKEN_LIFETIME=4h
+
+# Client binding: tokens are tied to the client that solved the challenge so
+# one solved challenge can't be shared across a botnet.
+#
+# TOKEN_BIND_USER_AGENT (default true) is a hard binding: a token presented
+# with a different User-Agent is rejected and the client is re-challenged.
+#
+# The client IP is also tracked -- the exact address for IPv4, the /64
+# prefix for IPv6 -- but that isn't configurable. While TOKEN_REQUEST_BUDGET
+# is enabled (the default), an IP change costs budget instead of triggering
+# a re-challenge; set the budget to 0 and the IP becomes a hard binding like
+# the User-Agent.
+TOKEN_BIND_USER_AGENT=true
+
+# Request budget: each token is good for this many requests before the
+# client must solve a new challenge (0 disables the budget). A request from
+# the same IP as the token's previous request costs 1; a request from a
+# different IP costs TOKEN_IP_SWITCH_COST. Humans on expensive
+# endpoints never notice 1000 over a 4h token (~4 requests/minute,
+# sustained); a mobile user pays the switch cost a few times a day; a bot
+# rotating IPs per request gets budget/cost (default: 100) requests per
+# solved challenge.
+#
+# Sophisticated bots that batch requests per IP (or keep one cookie jar per
+# IP) avoid the switch cost entirely; for them the budget itself is the only
+# limit. If they're still a problem, lower TOKEN_REQUEST_BUDGET to force
+# more solves -- humans on expensive endpoints won't notice until it gets
+# very low.
+#
+# IMPORTANT: do not protect paths that serve static assets (CSS, JS,
+# images). A page that loads a dozen assets through TPS spends a dozen+
+# budget per view, and real humans will hit the limit. Route assets around
+# TPS in your front proxy, or raise the budget accordingly. See the README.
+TOKEN_REQUEST_BUDGET=1000
+TOKEN_IP_SWITCH_COST=10

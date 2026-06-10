@@ -5,7 +5,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 func getenv() {
@@ -49,6 +51,20 @@ func getenv() {
 		errs = append(errs, "neither PROXY_TARGETS nor PROXY_TARGET is set")
 	}
 
+	tokenLifetime = 4 * time.Hour
+	if raw := os.Getenv("TOKEN_LIFETIME"); raw != "" {
+		var d, derr = time.ParseDuration(raw)
+		if derr != nil || d <= 0 {
+			errs = append(errs, fmt.Sprintf("TOKEN_LIFETIME %q must be a positive Go duration such as 30m or 2h", raw))
+		} else {
+			tokenLifetime = d
+		}
+	}
+
+	tokenBindUserAgent = parseBoolEnv("TOKEN_BIND_USER_AGENT", true, &errs)
+	tokenRequestBudget = parseIntEnv("TOKEN_REQUEST_BUDGET", 1000, 0, &errs)
+	tokenIPSwitchCost = parseIntEnv("TOKEN_IP_SWITCH_COST", 10, 1, &errs)
+
 	if templatePath == "" {
 		templatePath = "/var/local/tps/templates"
 	}
@@ -63,6 +79,37 @@ func getenv() {
 		logger.Error("Cannot start server", "error", strings.Join(errs, "; "))
 		os.Exit(1)
 	}
+}
+
+// parseBoolEnv reads the named env var as a boolean, returning def when the
+// var is unset. A value that won't parse appends to errs and returns def.
+func parseBoolEnv(name string, def bool, errs *[]string) bool {
+	var raw = os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	var b, err = strconv.ParseBool(raw)
+	if err != nil {
+		*errs = append(*errs, fmt.Sprintf("%s %q must be a boolean (true/false)", name, raw))
+		return def
+	}
+	return b
+}
+
+// parseIntEnv reads the named env var as an integer no smaller than minVal,
+// returning def when the var is unset. An invalid or out-of-range value
+// appends to errs and returns def.
+func parseIntEnv(name string, def, minVal int, errs *[]string) int {
+	var raw = os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	var n, err = strconv.Atoi(raw)
+	if err != nil || n < minVal {
+		*errs = append(*errs, fmt.Sprintf("%s %q must be an integer no smaller than %d", name, raw, minVal))
+		return def
+	}
+	return n
 }
 
 // parseProxyTargets parses the comma-separated "prefix=url[,prefix=url...]"

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,10 +12,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"turnstile-proxy-server/internal/db"
 	"turnstile-proxy-server/internal/requestid"
@@ -27,6 +31,14 @@ import (
 
 const (
 	cookieName = "tps-jwt"
+
+	// maskBitsIPv4 / maskBitsIPv6 are how many leading bits of a client IP
+	// matter when tracking the client: the exact address for IPv4, and the
+	// typical single-customer delegation for IPv6 so privacy-extension
+	// rotation within a /64 is invisible. These are deliberately not
+	// configurable; the request budget is the tuning knob.
+	maskBitsIPv4 = 32
+	maskBitsIPv6 = 64
 )
 
 // trustedProxyCIDRs lists the networks from which TPS will honor
@@ -47,6 +59,14 @@ type cachedRequest struct {
 	Body    []byte
 	Headers http.Header
 	URL     *url.URL
+}
+
+// budgetState tracks how much of its request budget a token has spent, and
+// the masked client IP of the token's most recent request so the next
+// request can be surcharged if the client moved
+type budgetState struct {
+	spent  int
+	lastIP string
 }
 
 // cloudflareVerifyResponse is the structure of the JSON response from Cloudflare
@@ -75,6 +95,12 @@ type Server struct {
 	siteKey       string
 	secretKey     string
 	jwtSigningKey []byte
+	tokenLifetime time.Duration
+	bindUserAgent bool
+	requestBudget int
+	ipSwitchCost  int
+	budgetMutex   sync.Mutex
+	budgetCache   *cache.Cache
 	requestCache  *cache.Cache
 	proxyTargets  []parsedProxyRoute
 	templates     map[string]string
@@ -97,14 +123,19 @@ func NewServer(router *gin.Engine, store db.Store) *Server {
 	}
 
 	var s = &Server{
-		r:            router,
-		db:           store,
-		render:       render,
-		logger:       slog.Default(),
-		siteKey:      "1x00000000000000000000AA",
-		secretKey:    "1x0000000000000000000000000000000AA",
-		requestCache: requestCache,
-		templates:    make(map[string]string),
+		r:             router,
+		db:            store,
+		render:        render,
+		logger:        slog.Default(),
+		siteKey:       "1x00000000000000000000AA",
+		secretKey:     "1x0000000000000000000000000000000AA",
+		tokenLifetime: time.Hour,
+		bindUserAgent: true,
+		requestBudget: 1000,
+		ipSwitchCost:  10,
+		budgetCache:   cache.New(time.Hour, 10*time.Minute),
+		requestCache:  requestCache,
+		templates:     make(map[string]string),
 	}
 	s.r.Any("/*proxyPath", s.handleProxy)
 
@@ -171,6 +202,147 @@ func (s *Server) pickTarget(reqPath string) *url.URL {
 func (s *Server) SetJWTSigningKey(k string) *Server {
 	s.jwtSigningKey = []byte(k)
 	return s
+}
+
+// SetTokenLifetime sets how long an issued token (and its cookie) stays valid
+// before the client must pass another challenge.
+func (s *Server) SetTokenLifetime(d time.Duration) *Server {
+	s.tokenLifetime = d
+	return s
+}
+
+// SetClientBinding controls whether the User-Agent header is part of the
+// binding fingerprint tying a token to the client that solved the challenge.
+// The client IP's role isn't configurable: it is hard-bound when the request
+// budget is disabled, and surcharged on change when the budget is enabled.
+func (s *Server) SetClientBinding(userAgent bool) *Server {
+	s.bindUserAgent = userAgent
+	return s
+}
+
+// SetRequestBudget controls how many requests a single token is good for
+// before the client must solve another challenge, and the surcharge applied
+// when a request's masked IP differs from the token's previous request. A
+// budget of 0 disables the limiter, which also restores hard IP binding:
+// with no budget to charge against, an IP change means a re-challenge.
+func (s *Server) SetRequestBudget(budget, switchCost int) *Server {
+	s.requestBudget = budget
+	s.ipSwitchCost = switchCost
+	return s
+}
+
+// maskClientIP reduces a client IP to the tracked prefix (exact address for
+// IPv4, /64 for IPv6) so that address changes within that range are
+// invisible — both to hard IP binding (budget disabled) and to switch
+// detection (budget enabled).
+func (s *Server) maskClientIP(raw string) string {
+	var addr, err = netip.ParseAddr(raw)
+	if err != nil {
+		// Unparseable addresses still get bound, just without masking, so a
+		// weird client can't opt out of IP binding entirely
+		return raw
+	}
+
+	addr = addr.Unmap()
+	var bits = maskBitsIPv6
+	if addr.Is4() {
+		bits = maskBitsIPv4
+	}
+
+	var prefix, perr = addr.Prefix(bits)
+	if perr != nil {
+		return raw
+	}
+	return prefix.String()
+}
+
+// clientFingerprint hashes the binding-relevant attributes of the requesting
+// client. It returns "" when all binding options are disabled. The IP is only
+// part of the fingerprint when the request budget is disabled: with a budget,
+// IP changes are charged against the budget (see chargeToken) instead of
+// rejected outright, so binding the token to an IP would defeat that.
+func (s *Server) clientFingerprint(c *gin.Context) string {
+	var ipPart string
+	if s.requestBudget <= 0 {
+		ipPart = s.maskClientIP(c.ClientIP())
+	}
+
+	var uaPart string
+	if s.bindUserAgent {
+		uaPart = c.Request.UserAgent()
+	}
+
+	if ipPart == "" && !s.bindUserAgent {
+		return ""
+	}
+
+	var sum = sha256.Sum256([]byte(ipPart + "\n" + uaPart))
+	return hex.EncodeToString(sum[:])
+}
+
+// tokenMatchesClient reports whether the parsed token's binding claim matches
+// the client making the current request. Tokens issued before binding was
+// enabled (or with a different binding config) fail the check and force a new
+// challenge.
+func (s *Server) tokenMatchesClient(token *jwt.Token, c *gin.Context) bool {
+	var want = s.clientFingerprint(c)
+	if want == "" {
+		return true
+	}
+
+	var claims, ok = token.Claims.(jwt.MapClaims)
+	if !ok {
+		return false
+	}
+	var got, _ = claims["bnd"].(string)
+	return got == want
+}
+
+// chargeToken debits the token's request budget for the current request: a
+// normal request costs 1, while a request whose masked IP differs from the
+// token's previous request costs ipSwitchCost. It returns false when the
+// budget can't cover the cost, meaning the client must solve a new challenge.
+// Budget state lives in memory; after a restart it is rebuilt on first sight
+// of a token, giving that token a fresh budget. Tokens without a "jti" claim
+// (issued before budgets existed) are rejected so they can't dodge the limit.
+func (s *Server) chargeToken(token *jwt.Token, c *gin.Context) bool {
+	if s.requestBudget <= 0 {
+		return true
+	}
+
+	var claims, ok = token.Claims.(jwt.MapClaims)
+	if !ok {
+		return false
+	}
+	var jti, _ = claims["jti"].(string)
+	if jti == "" {
+		return false
+	}
+
+	var ip = s.maskClientIP(c.ClientIP())
+
+	s.budgetMutex.Lock()
+	defer s.budgetMutex.Unlock()
+
+	var state *budgetState
+	if cached, found := s.budgetCache.Get(jti); found {
+		state = cached.(*budgetState)
+	} else {
+		state = &budgetState{lastIP: ip}
+		s.budgetCache.Set(jti, state, s.tokenLifetime)
+	}
+
+	var cost = 1
+	if ip != state.lastIP {
+		cost = s.ipSwitchCost
+	}
+	if state.spent+cost > s.requestBudget {
+		return false
+	}
+
+	state.spent += cost
+	state.lastIP = ip
+	return true
 }
 
 // LoadCoreTemplates is a general-case helper to load either from local disk
@@ -293,14 +465,23 @@ func (s *Server) handleProxy(c *gin.Context) {
 	s.logger.Debug("handleProxy: checking for JWT")
 	var cookie, err = c.Cookie(cookieName)
 	if err == nil {
-		var _, parseErr = jwt.Parse(cookie, func(token *jwt.Token) (interface{}, error) {
+		var token, parseErr = jwt.Parse(cookie, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
 			return s.jwtSigningKey, nil
 		})
 
-		if parseErr == nil {
+		switch {
+		case parseErr != nil:
+			s.logger.Warn("JWT was present but invalid, presenting challenge", "error", parseErr)
+		case !s.tokenMatchesClient(token, c):
+			s.logger.Warn("JWT is valid but bound to a different client, presenting challenge",
+				"clientIP", c.ClientIP())
+		case !s.chargeToken(token, c):
+			s.logger.Warn("JWT is valid but its request budget is exhausted, presenting challenge",
+				"clientIP", c.ClientIP())
+		default:
 			s.logger.Debug("JWT is valid, proxying request", "URL", c.Request.URL.String())
 			s.db.LogRequest(db.RequestLog{
 				ClientIP:      c.ClientIP(),
@@ -311,8 +492,6 @@ func (s *Server) handleProxy(c *gin.Context) {
 			s.replayRequest(c, c.Request)
 			return
 		}
-
-		s.logger.Warn("JWT was present but invalid, presenting challenge", "error", parseErr)
 	} else if err == http.ErrNoCookie {
 		s.logger.Debug("No JWT, presenting challenge")
 	}
@@ -407,13 +586,26 @@ func (s *Server) replayRequest(c *gin.Context, req *http.Request) {
 }
 
 func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
-	var claims = jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+	var jti = requestid.New()
+	var claimsMap = jwt.MapClaims{
 		"iss": "tps",
 		"aud": "caddy",
+		"jti": jti,
 		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(24 * time.Hour).Unix(),
+		"exp": time.Now().Add(s.tokenLifetime).Unix(),
 		"nbf": time.Now().Unix(),
-	})
+	}
+	if fp := s.clientFingerprint(c); fp != "" {
+		claimsMap["bnd"] = fp
+	}
+	if s.requestBudget > 0 {
+		// Seed the budget state with the solver's IP so the first request
+		// from a different address is already recognizable as a switch
+		s.budgetMutex.Lock()
+		s.budgetCache.Set(jti, &budgetState{lastIP: s.maskClientIP(c.ClientIP())}, s.tokenLifetime)
+		s.budgetMutex.Unlock()
+	}
+	var claims = jwt.NewWithClaims(jwt.SigningMethodHS256, claimsMap)
 
 	var tokenString, err = claims.SignedString(s.jwtSigningKey)
 	if err != nil {
@@ -423,7 +615,7 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	}
 
 	var secure = c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
-	c.SetCookie(cookieName, tokenString, 3600*24, "/", "", secure, true)
+	c.SetCookie(cookieName, tokenString, int(s.tokenLifetime.Seconds()), "/", "", secure, true)
 
 	var cachedReqInterface, ok = s.requestCache.Get(requestID)
 	if !ok {

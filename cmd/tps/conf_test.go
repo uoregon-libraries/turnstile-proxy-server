@@ -5,6 +5,71 @@ import (
 	"testing"
 )
 
+func TestParseBoolEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		def     bool
+		want    bool
+		wantErr bool
+	}{
+		{"unset returns default", "", true, true, false},
+		{"explicit false", "false", true, false, false},
+		{"explicit true", "1", false, true, false},
+		{"garbage errors and returns default", "yep", true, true, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.value != "" {
+				t.Setenv("TPS_TEST_BOOL", tc.value)
+			}
+			var errs []string
+			got := parseBoolEnv("TPS_TEST_BOOL", tc.def, &errs)
+			if got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+			if (len(errs) > 0) != tc.wantErr {
+				t.Errorf("errs = %v, wantErr = %v", errs, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseIntEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		def     int
+		min     int
+		want    int
+		wantErr bool
+	}{
+		{"unset returns default", "", 1000, 0, 1000, false},
+		{"valid value", "250", 1000, 0, 250, false},
+		{"zero allowed when min is zero", "0", 1000, 0, 0, false},
+		{"below min errors", "0", 10, 1, 10, true},
+		{"negative errors", "-5", 1000, 0, 1000, true},
+		{"garbage errors", "lots", 1000, 0, 1000, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.value != "" {
+				t.Setenv("TPS_TEST_INT", tc.value)
+			}
+			var errs []string
+			got := parseIntEnv("TPS_TEST_INT", tc.def, tc.min, &errs)
+			if got != tc.want {
+				t.Errorf("got %d, want %d", got, tc.want)
+			}
+			if (len(errs) > 0) != tc.wantErr {
+				t.Errorf("errs = %v, wantErr = %v", errs, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestParseProxyTargets(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 	"turnstile-proxy-server/internal/db"
 	"turnstile-proxy-server/internal/templates"
 	"turnstile-proxy-server/internal/version"
@@ -27,6 +28,10 @@ var jwtSigningKey string
 var proxyTargets []proxyRoute
 var databaseDSN string
 var templatePath string
+var tokenLifetime time.Duration
+var tokenBindUserAgent bool
+var tokenRequestBudget int
+var tokenIPSwitchCost int
 
 var logger *slog.Logger
 
@@ -73,6 +78,16 @@ func help() {
 	fmt.Println("- DATABASE_DSN (optional): DSN for the MariaDB database, e.g., user:pass@tcp(host:3306)/dbname?parseTime=true.")
 	fmt.Println("                            If unset, request logging is disabled.")
 	fmt.Println("- TEMPLATE_PATH (optional): path to external templates, defaults to /var/local/tps/templates")
+	fmt.Println(`- TOKEN_LIFETIME (optional): how long a solved challenge stays valid, as a Go duration ("30m",`)
+	fmt.Println(`                 "2h"). Defaults to "4h". Shorter lifetimes force bots to re-solve more often.`)
+	fmt.Println("- TOKEN_BIND_USER_AGENT (optional): bind tokens to the client's User-Agent header so a token")
+	fmt.Println("                 stolen or shared by a client with a different UA is rejected. Defaults to true.")
+	fmt.Println("- TOKEN_REQUEST_BUDGET (optional): how many requests one solved challenge is good for. Defaults")
+	fmt.Println("                 to 1000. 0 disables the budget, which also makes IP binding a hard reject")
+	fmt.Println("                 instead of a budget surcharge.")
+	fmt.Println("- TOKEN_IP_SWITCH_COST (optional): budget cost of a request whose IP differs from the token's")
+	fmt.Println("                 previous request. IPs are tracked exactly for IPv4 and as a /64 for IPv6.")
+	fmt.Println("                 Defaults to 10; minimum 1 (an ordinary request).")
 }
 
 func serve() {
@@ -102,6 +117,9 @@ func serve() {
 		SetSiteKey(turnstileSiteKey).
 		SetProxyTargets(proxyTargets).
 		SetJWTSigningKey(jwtSigningKey).
+		SetTokenLifetime(tokenLifetime).
+		SetClientBinding(tokenBindUserAgent).
+		SetRequestBudget(tokenRequestBudget, tokenIPSwitchCost).
 		SetLogger(logger.With("log.source", "main.Server"))
 
 	server.LoadCoreTemplates("internal/templates/*.go.html", templates.FS)
