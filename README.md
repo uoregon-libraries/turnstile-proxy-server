@@ -48,6 +48,10 @@ up. Once set, you can simply compile (with `make`) and run.
 - `TOKEN_IP_SWITCH_COST` (optional): how much of the budget a request costs
   when the client's IP differs from the token's previous request. Defaults
   to `10`; minimum `1`. See "Challenge Tokens" below.
+- `CHALLENGE_MODE` (optional): `all` (the default) challenges every request
+  that lacks a valid token; `navigation` challenges only top-level page
+  navigations and proxies everything else through untouched. See
+  "Single-Page Apps" below.
 
 [1]: <https://developers.cloudflare.com/turnstile/troubleshooting/testing/>
 
@@ -163,6 +167,49 @@ If you genuinely need to protect static files (e.g., the files themselves
 are what bots are scraping), raise `TOKEN_REQUEST_BUDGET` to account for the
 per-page request multiplier, and remember every asset request passes through
 TPS and the backend it proxies to.
+
+## Single-Page Apps
+
+The default mode challenges every request, which breaks single-page apps
+(DSpace, anything Angular/React/Vue-based): the requests that fail are the
+app's background REST calls, and a `fetch()` call can't render a challenge
+page. Users just see a broken app, with no challenge they could solve.
+
+`CHALLENGE_MODE=navigation` fixes this by only challenging *top-level page
+navigations* — typing a URL, clicking a link, reloading. Browsers label
+every request with a `Sec-Fetch-Mode` header that page JavaScript can
+neither forge nor suppress: navigations say `navigate`, while the app's API
+calls, scripts, and images say `cors`, `no-cors`, or `same-origin`. In
+navigation mode, TPS proxies every non-navigation request straight through,
+no token required (or charged against the budget — only navigations spend
+it). This also makes the static-asset warning above moot: asset requests
+are non-navigations, so they're free.
+
+The user experience: the first page load is a navigation, so the user is
+challenged there, solves it once, and the app works. If the token expires
+mid-session nothing breaks — the app's background calls don't need a token —
+and the user is simply re-challenged on their next real page load.
+
+Understand what this mode does *not* protect:
+
+- The API and asset endpoints are open to any bot that sends a
+  `Sec-Fetch-Mode` header the way a browser's `fetch()` does — one static
+  header is enough. Dumb scrapers that send no fetch metadata at all are
+  still challenged (a missing header is treated as a navigation), and
+  browser-mimicking crawler swarms faithfully send `navigate` on page
+  fetches, so they're challenged too. But a targeted bot that knows your
+  API's shape can harvest it freely. Use this mode when keeping the
+  *pages* (and the rendering cost behind them) protected matters more than
+  hiding the raw API.
+- Requests from pre-2023 browsers (no `Sec-Fetch-Mode` at all: Safari
+  before 16.4, Firefox before 90) are all treated as navigations. Those
+  browsers still work — they're challenged on page load like anyone else —
+  but if their token expires mid-session, their in-page API calls get
+  challenge HTML until the next reload.
+
+One deployment note for DSpace specifically: the Angular frontend's
+server-side rendering makes its own calls to the REST backend. Route that
+server-to-server traffic directly to the backend, not through TPS.
 
 ## Usage
 

@@ -88,22 +88,23 @@ type parsedProxyRoute struct {
 // presenting the turnstile challenge, verifying the challenge, and finally
 // proxying successful requests
 type Server struct {
-	r             *gin.Engine
-	render        multitemplate.Renderer
-	logger        *slog.Logger
-	db            db.Store
-	siteKey       string
-	secretKey     string
-	jwtSigningKey []byte
-	tokenLifetime time.Duration
-	bindUserAgent bool
-	requestBudget int
-	ipSwitchCost  int
-	budgetMutex   sync.Mutex
-	budgetCache   *cache.Cache
-	requestCache  *cache.Cache
-	proxyTargets  []parsedProxyRoute
-	templates     map[string]string
+	r              *gin.Engine
+	render         multitemplate.Renderer
+	logger         *slog.Logger
+	db             db.Store
+	siteKey        string
+	secretKey      string
+	jwtSigningKey  []byte
+	tokenLifetime  time.Duration
+	bindUserAgent  bool
+	requestBudget  int
+	ipSwitchCost   int
+	navigationOnly bool
+	budgetMutex    sync.Mutex
+	budgetCache    *cache.Cache
+	requestCache   *cache.Cache
+	proxyTargets   []parsedProxyRoute
+	templates      map[string]string
 }
 
 // NewServer creates and configures a new Server instance. You must manually
@@ -217,6 +218,18 @@ func (s *Server) SetTokenLifetime(d time.Duration) *Server {
 // budget is disabled, and surcharged on change when the budget is enabled.
 func (s *Server) SetClientBinding(userAgent bool) *Server {
 	s.bindUserAgent = userAgent
+	return s
+}
+
+// SetChallengeNavigationOnly controls whether only navigation requests (per
+// [isNavigationRequest]) are challenged. When enabled, every non-navigation
+// request — a single-page app's REST calls, scripts, images — is proxied
+// straight through with no token required, checked, or charged. This keeps
+// SPAs working when a token expires mid-session (the next page load
+// re-challenges instead), at the cost of leaving those endpoints open to
+// clients that present fetch metadata the way a browser's fetch() does.
+func (s *Server) SetChallengeNavigationOnly(navOnly bool) *Server {
+	s.navigationOnly = navOnly
 	return s
 }
 
@@ -461,7 +474,33 @@ func (s *Server) getTemplate(r *http.Request, shortname string) string {
 	return "core/" + shortname
 }
 
+// isNavigationRequest reports whether the request is a top-level page
+// navigation, as labeled by the browser's fetch-metadata headers. Browsers
+// since roughly 2023 (Chrome 76+, Firefox 90+, Safari 16.4+) send
+// Sec-Fetch-Mode on every request, and page JavaScript can neither forge nor
+// suppress it. A request without the header (an old browser, or a non-browser
+// client) is treated as a navigation so that a header-less scraper still gets
+// challenged rather than waved through; the corner case this costs is an old
+// browser whose token expires mid-session, since its in-page API calls can
+// only be recognized by that token.
+func isNavigationRequest(r *http.Request) bool {
+	var mode = r.Header.Get("Sec-Fetch-Mode")
+	return mode == "" || mode == "navigate"
+}
+
 func (s *Server) handleProxy(c *gin.Context) {
+	if s.navigationOnly && !isNavigationRequest(c.Request) {
+		s.logger.Debug("Non-navigation request in navigation-only mode, proxying without challenge",
+			"URL", c.Request.URL.String())
+		s.db.LogRequest(db.RequestLog{
+			ClientIP:  c.ClientIP(),
+			Timestamp: time.Now(),
+			URL:       c.Request.URL.String(),
+		})
+		s.replayRequest(c, c.Request)
+		return
+	}
+
 	s.logger.Debug("handleProxy: checking for JWT")
 	var cookie, err = c.Cookie(cookieName)
 	if err == nil {

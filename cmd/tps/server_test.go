@@ -1,10 +1,14 @@
 package main
 
 import (
+	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+	"turnstile-proxy-server/internal/db"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -291,6 +295,115 @@ func TestChargeToken(t *testing.T) {
 		}
 		if !s.chargeToken(token, solver) {
 			t.Error("solver's own request rejected")
+		}
+	})
+}
+
+func TestIsNavigationRequest(t *testing.T) {
+	tests := []struct {
+		mode string
+		want bool
+	}{
+		{"", true},
+		{"navigate", true},
+		{"cors", false},
+		{"no-cors", false},
+		{"same-origin", false},
+		{"websocket", false},
+	}
+
+	for _, tc := range tests {
+		name := tc.mode
+		if name == "" {
+			name = "header absent"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/anything", nil)
+			if tc.mode != "" {
+				r.Header.Set("Sec-Fetch-Mode", tc.mode)
+			}
+			if got := isNavigationRequest(r); got != tc.want {
+				t.Errorf("isNavigationRequest(Sec-Fetch-Mode: %q) = %v, want %v", tc.mode, got, tc.want)
+			}
+		})
+	}
+}
+
+// newChallengeModeServer builds a full Server proxying to the given backend,
+// with a stub challenge template registered so the challenge page can render
+func newChallengeModeServer(t *testing.T, backendURL string, navOnly bool) *Server {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	s := NewServer(gin.New(), db.NewNoopStore()).
+		SetJWTSigningKey("test-key").
+		SetProxyTarget(backendURL).
+		SetChallengeNavigationOnly(navOnly)
+	s.render.AddFromString("core/challenge", "challenge page {{.RequestID}}")
+	return s
+}
+
+func TestChallengeNavigationOnly(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("backend response"))
+	}))
+	defer backend.Close()
+
+	// do sends a tokenless GET with the given Sec-Fetch-Mode ("" omits the
+	// header) through a live TPS instance and returns the status and body.
+	// The reverse proxy needs a real server-backed ResponseWriter, so a bare
+	// httptest.NewRecorder won't do here.
+	do := func(t *testing.T, s *Server, secFetchMode string) (int, string) {
+		t.Helper()
+		tps := httptest.NewServer(s.r)
+		defer tps.Close()
+
+		req, err := http.NewRequest("GET", tps.URL+"/protected/data", nil)
+		if err != nil {
+			t.Fatalf("building request: %v", err)
+		}
+		if secFetchMode != "" {
+			req.Header.Set("Sec-Fetch-Mode", secFetchMode)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("sending request: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("reading response body: %v", err)
+		}
+		return resp.StatusCode, string(body)
+	}
+
+	t.Run("navigation mode proxies non-navigations without a token", func(t *testing.T) {
+		s := newChallengeModeServer(t, backend.URL, true)
+		for _, mode := range []string{"cors", "no-cors", "same-origin", "websocket"} {
+			code, body := do(t, s, mode)
+			if code != http.StatusOK || !strings.Contains(body, "backend response") {
+				t.Errorf("Sec-Fetch-Mode %q: got status %d, want the backend response proxied through", mode, code)
+			}
+		}
+	})
+
+	t.Run("navigation mode still challenges navigations", func(t *testing.T) {
+		s := newChallengeModeServer(t, backend.URL, true)
+		for _, mode := range []string{"navigate", ""} {
+			code, body := do(t, s, mode)
+			if code != http.StatusForbidden {
+				t.Errorf("Sec-Fetch-Mode %q: got status %d, want %d (challenge)", mode, code, http.StatusForbidden)
+			}
+			if strings.Contains(body, "backend response") {
+				t.Errorf("Sec-Fetch-Mode %q: backend response leaked through without a token", mode)
+			}
+		}
+	})
+
+	t.Run("default mode challenges non-navigations too", func(t *testing.T) {
+		s := newChallengeModeServer(t, backend.URL, false)
+		code, _ := do(t, s, "cors")
+		if code != http.StatusForbidden {
+			t.Errorf("got status %d, want %d (challenge)", code, http.StatusForbidden)
 		}
 	})
 }

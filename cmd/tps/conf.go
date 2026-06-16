@@ -65,6 +65,15 @@ func getenv() {
 	tokenRequestBudget = parseIntEnv("TOKEN_REQUEST_BUDGET", 1000, 0, &errs)
 	tokenIPSwitchCost = parseIntEnv("TOKEN_IP_SWITCH_COST", 10, 1, &errs)
 
+	switch raw := os.Getenv("CHALLENGE_MODE"); raw {
+	case "", "all":
+		challengeNavigationOnly = false
+	case "navigation":
+		challengeNavigationOnly = true
+	default:
+		errs = append(errs, fmt.Sprintf(`CHALLENGE_MODE %q must be "all" or "navigation"`, raw))
+	}
+
 	if templatePath == "" {
 		templatePath = "/var/local/tps/templates"
 	}

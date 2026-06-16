@@ -32,6 +32,7 @@ var tokenLifetime time.Duration
 var tokenBindUserAgent bool
 var tokenRequestBudget int
 var tokenIPSwitchCost int
+var challengeNavigationOnly bool
 
 var logger *slog.Logger
 
@@ -88,6 +89,11 @@ func help() {
 	fmt.Println("- TOKEN_IP_SWITCH_COST (optional): budget cost of a request whose IP differs from the token's")
 	fmt.Println("                 previous request. IPs are tracked exactly for IPv4 and as a /64 for IPv6.")
 	fmt.Println("                 Defaults to 10; minimum 1 (an ordinary request).")
+	fmt.Println(`- CHALLENGE_MODE (optional): "all" (the default) challenges every request that lacks a valid`)
+	fmt.Println(`                 token. "navigation" challenges only top-level page navigations (per the browser's`)
+	fmt.Println("                 Sec-Fetch-Mode header) and proxies everything else through with no token needed.")
+	fmt.Println("                 Use \"navigation\" for single-page apps whose background API calls can't render a")
+	fmt.Println("                 challenge page; note it leaves the API endpoints open to bots. See the README.")
 }
 
 func serve() {
@@ -120,6 +126,7 @@ func serve() {
 		SetTokenLifetime(tokenLifetime).
 		SetClientBinding(tokenBindUserAgent).
 		SetRequestBudget(tokenRequestBudget, tokenIPSwitchCost).
+		SetChallengeNavigationOnly(challengeNavigationOnly).
 		SetLogger(logger.With("log.source", "main.Server"))
 
 	server.LoadCoreTemplates("internal/templates/*.go.html", templates.FS)
