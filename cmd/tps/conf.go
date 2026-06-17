@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,7 +11,57 @@ import (
 	"time"
 )
 
+// loadEnvFile reads a simple KEY=VALUE ".env"-style file and sets any variables
+// that aren't already present in the real environment, so actual env vars (e.g.
+// from Docker or the shell) always win. A missing file is not an error: the
+// file is a convenience for local development. Blank lines and "#" comments are
+// ignored, an optional leading "export " is stripped, and values may be wrapped
+// in single or double quotes.
+func loadEnvFile(path string) error {
+	var f, err = os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+
+	var scanner = bufio.NewScanner(f)
+	for line := 0; scanner.Scan(); line++ {
+		var text = strings.TrimSpace(scanner.Text())
+		if text == "" || strings.HasPrefix(text, "#") {
+			continue
+		}
+		text = strings.TrimPrefix(text, "export ")
+
+		var key, val, ok = strings.Cut(text, "=")
+		if !ok {
+			return fmt.Errorf("%s line %d: missing '='", path, line+1)
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		if len(val) >= 2 && (val[0] == '"' || val[0] == '\'') && val[len(val)-1] == val[0] {
+			val = val[1 : len(val)-1]
+		}
+
+		if _, set := os.LookupEnv(key); !set {
+			logger.Info("Setting ENV value from file", "file", path, "key", key, "val", val)
+			os.Setenv(key, val)
+		}
+	}
+	return scanner.Err()
+}
+
 func getenv() {
+	if envFile != "" {
+		logger.Info("Overriding environment from file", "file", envFile)
+		if err := loadEnvFile(envFile); err != nil {
+			logger.Error("Cannot read env file", "path", envFile, "error", err)
+			os.Exit(1)
+		}
+	}
+
 	bindAddr = os.Getenv("BIND_ADDR")
 	turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")
 	turnstileSiteKey = os.Getenv("TURNSTILE_SITE_KEY")

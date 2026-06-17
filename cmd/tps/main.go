@@ -38,8 +38,13 @@ var challengeNavigationOnly bool
 
 var logger *slog.Logger
 
+// envFile is the path given by the optional -env-file flag: a KEY=VALUE file
+// loaded into the environment before config is read (real env vars still win).
+var envFile string
+
 func main() {
 	var logLevelStr = flag.String("log-level", "info", "log verbosity: debug, info, warn, or error")
+	flag.StringVar(&envFile, "env-file", "", "load environment from this KEY=VALUE file before reading config (real env vars win)")
 	flag.Usage = printUsage
 	flag.Parse()
 
@@ -80,13 +85,15 @@ func parseLogLevel(name string) (slog.Level, bool) {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [serve|help]")
+	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [-env-file=path] [serve|help]")
 }
 
 func help() {
 	fmt.Println("Flags:")
 	fmt.Println(`- -log-level (optional): log verbosity, one of "debug", "info", "warn", or "error".`)
 	fmt.Println(`                 Defaults to "info".`)
+	fmt.Println("- -env-file (optional): path to a KEY=VALUE file loaded into the environment before")
+	fmt.Println("                 config is read. Real environment variables take precedence.")
 	fmt.Println("")
 	fmt.Println("Configuration:")
 	fmt.Println(`- GIN_MODE (optional): "debug" or "release", defaults to "debug". Controls template`)
