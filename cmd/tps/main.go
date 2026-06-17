@@ -2,9 +2,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 	"turnstile-proxy-server/internal/db"
 	"turnstile-proxy-server/internal/templates"
@@ -37,20 +39,20 @@ var challengeNavigationOnly bool
 var logger *slog.Logger
 
 func main() {
-	var level = slog.LevelDebug
-	if gin.Mode() == gin.ReleaseMode {
-		level = slog.LevelInfo
+	var logLevelStr = flag.String("log-level", "info", "log verbosity: debug, info, warn, or error")
+	flag.Usage = printUsage
+	flag.Parse()
+
+	var level, ok = parseLogLevel(*logLevelStr)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "invalid -log-level %q: must be debug, info, warn, or error\n", *logLevelStr)
+		os.Exit(2)
 	}
 	logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
 	fmt.Printf("Turnstile Proxy Server, build %s\n\n", version.Version)
 
-	if len(os.Args) < 2 {
-		printUsage()
-		return
-	}
-
-	switch os.Args[1] {
+	switch flag.Arg(0) {
 	case "serve":
 		serve()
 	case "help":
@@ -60,13 +62,35 @@ func main() {
 	}
 }
 
+// parseLogLevel maps a -log-level flag value to a slog.Level. The bool is false
+// for an unrecognized name so the caller can reject it.
+func parseLogLevel(name string) (slog.Level, bool) {
+	switch strings.ToLower(name) {
+	case "debug":
+		return slog.LevelDebug, true
+	case "info":
+		return slog.LevelInfo, true
+	case "warn", "warning":
+		return slog.LevelWarn, true
+	case "error":
+		return slog.LevelError, true
+	default:
+		return slog.LevelInfo, false
+	}
+}
+
 func printUsage() {
-	fmt.Println("Usage: tps [serve|help]")
+	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [serve|help]")
 }
 
 func help() {
+	fmt.Println("Flags:")
+	fmt.Println(`- -log-level (optional): log verbosity, one of "debug", "info", "warn", or "error".`)
+	fmt.Println(`                 Defaults to "info".`)
+	fmt.Println("")
 	fmt.Println("Configuration:")
-	fmt.Println(`- GIN_MODE (optional): "debug" or "release", defaults to "debug".`)
+	fmt.Println(`- GIN_MODE (optional): "debug" or "release", defaults to "debug". Controls template`)
+	fmt.Println(`                 loading: "release" serves embedded templates, "debug" hot-reloads from disk.`)
 	fmt.Println(`- BIND_ADDR (required): address TPS listens on, e.g., ":8080" to listen on all IPs at port 8080`)
 	fmt.Println("- TURNSTILE_SECRET_KEY (required): your Turnstile secret key")
 	fmt.Println("- TURNSTILE_SITE_KEY (required): your Turnstile site key")
