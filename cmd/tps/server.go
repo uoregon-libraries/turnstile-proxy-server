@@ -378,6 +378,7 @@ func (s *Server) LoadCoreTemplates(pattern string, fsys fs.FS) {
 		panic("Fatal error, cannot continue without templates")
 	}
 
+	s.logger.Debug("Reading / mapping core templates", "templates", templates)
 	for _, pth := range templates {
 		if strings.HasSuffix(pth, ".go.html") {
 			var name = "core/" + strings.Replace(filepath.Base(pth), ".go.html", "", 1)
