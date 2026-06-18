@@ -213,7 +213,11 @@ server-to-server traffic directly to the backend, not through TPS.
 
 ## Usage
 
-Build via `make`, and run via `./bin/tps [serve|help]`.
+Build via `make`, and run via `./bin/tps [serve|help]`. For local dev work, you
+can pass `-env-file=./env` or something similar in order to load settings.
+You can technically use this on production systems, but you likely want to use
+podman, k8s, systemd, etc., where your environment is explicitly set up, or
+comes from a file that your TPS user can't read, etc.
 
 By itself, TPS isn't very useful beyond very basic testing.
 
