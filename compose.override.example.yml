@@ -9,6 +9,7 @@ services:
       TURNSTILE_SECRET_KEY: "bar"
       JWT_SIGNING_KEY: "shhhhhh-this-is-very-secret"
       PROXY_TARGET: "https://somewhere.out-there"
+    command: ["-log-level", "debug", "serve"]
     volumes:
       - ./custom-templates:/var/local/tps/templates
     ports:
