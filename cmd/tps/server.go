@@ -712,6 +712,34 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 		c.String(http.StatusInternalServerError, "Could not replay original request")
 		return
 	}
-	req.Header = cachedReq.Headers
+	req.Header = stripConditionalHeaders(cachedReq.Headers)
 	s.replayRequest(c, req)
+}
+
+// conditionalHeaders are request headers that ask the backend to answer with a
+// bodyless 304/412 if the client's cached copy is still current. They are
+// meaningless on a post-challenge replay: the response is delivered as the
+// result of the challenge-form POST, where the browser has no cached entry to
+// revalidate, so a 304 renders as a blank page. We strip them so the replay
+// always yields a full response.
+var conditionalHeaders = []string{
+	"If-None-Match",
+	"If-Modified-Since",
+	"If-Match",
+	"If-Unmodified-Since",
+	"If-Range",
+}
+
+// stripConditionalHeaders returns a copy of h with the conditional/revalidation
+// headers removed. It clones first so the cached original request (which may
+// outlive this replay in the request cache) is left untouched.
+func stripConditionalHeaders(h http.Header) http.Header {
+	var out = h.Clone()
+	if out == nil {
+		return out
+	}
+	for _, name := range conditionalHeaders {
+		out.Del(name)
+	}
+	return out
 }

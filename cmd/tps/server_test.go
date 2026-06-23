@@ -446,3 +446,33 @@ func TestTokenMatchesClient(t *testing.T) {
 		t.Error("token rejected even though no fingerprint applies")
 	}
 }
+
+func TestStripConditionalHeaders(t *testing.T) {
+	orig := http.Header{
+		"If-None-Match":       {`"abc123"`},
+		"If-Modified-Since":   {"Wed, 21 Oct 2025 07:28:00 GMT"},
+		"If-Match":            {`"abc123"`},
+		"If-Unmodified-Since": {"Wed, 21 Oct 2025 07:28:00 GMT"},
+		"If-Range":            {`"abc123"`},
+		"User-Agent":          {"Mozilla/5.0"},
+		"Accept":              {"text/html"},
+	}
+
+	stripped := stripConditionalHeaders(orig)
+
+	for _, name := range conditionalHeaders {
+		if stripped.Get(name) != "" {
+			t.Errorf("conditional header %q survived stripping", name)
+		}
+		// The cached original must be left intact for any later use.
+		if orig.Get(name) == "" {
+			t.Errorf("stripping mutated the source header %q", name)
+		}
+	}
+	if stripped.Get("User-Agent") != "Mozilla/5.0" {
+		t.Error("non-conditional header User-Agent was dropped")
+	}
+	if stripped.Get("Accept") != "text/html" {
+		t.Error("non-conditional header Accept was dropped")
+	}
+}
