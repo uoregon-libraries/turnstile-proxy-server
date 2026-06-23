@@ -704,6 +704,21 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	}
 
 	var cachedReq = cachedReqInterface.(*cachedRequest)
+
+	// For a GET, use POST/Redirect/GET: the challenge was solved via a form
+	// POST to the original URL, so the browser's history entry for that URL is
+	// now a POST. Replaying the GET inline would render the page once, but a
+	// refresh re-submits the POST and the backend 404s (or 405s). Redirect to
+	// the original URL instead; the cookie set above lets the follow-up GET
+	// through, and the browser's history entry becomes a clean GET. Non-GET
+	// originals (e.g. an API POST) can't be turned into a GET, so they are
+	// still replayed inline.
+	if cachedReq.Method == http.MethodGet {
+		s.logger.Debug("Redirecting to original GET after challenge", "URL", cachedReq.URL.String())
+		c.Redirect(http.StatusSeeOther, cachedReq.URL.String())
+		return
+	}
+
 	s.logger.Debug("Replaying request", "Method", cachedReq.Method, "URL", cachedReq.URL)
 
 	var req, reqErr = http.NewRequest(cachedReq.Method, cachedReq.URL.String(), bytes.NewReader(cachedReq.Body))

@@ -476,3 +476,40 @@ func TestStripConditionalHeaders(t *testing.T) {
 		t.Error("non-conditional header Accept was dropped")
 	}
 }
+
+func TestIssueTokenRedirectsForGet(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := NewServer(gin.New(), db.NewNoopStore()).
+		SetJWTSigningKey("test-key").
+		SetProxyTarget("http://backend:8080")
+
+	const reqID = "req-1"
+	origURL := httptest.NewRequest(http.MethodGet, "/protected/big-file?page=2", nil).URL
+	s.requestCache.Set(reqID, &cachedRequest{
+		Method:  http.MethodGet,
+		URL:     origURL,
+		Headers: http.Header{},
+	}, cache.DefaultExpiration)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	// The challenge form POSTs to the original URL; that POST is what reaches
+	// issueTokenAndReplay.
+	c.Request = httptest.NewRequest(http.MethodPost, "/protected/big-file?page=2", nil)
+
+	s.issueTokenAndReplay(c, reqID)
+
+	// Assert gin's buffered status rather than rec.Code: on a POST redirect
+	// http.Redirect writes no body, so gin only flushes the status to the
+	// recorder during its engine's end-of-handler pass, which a direct call
+	// skips. (Routed through the engine this really is a 303.)
+	if c.Writer.Status() != http.StatusSeeOther {
+		t.Fatalf("got status %d, want %d (POST/Redirect/GET)", c.Writer.Status(), http.StatusSeeOther)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/protected/big-file?page=2" {
+		t.Errorf("Location = %q, want the original GET URL", loc)
+	}
+	if rec.Header().Get("Set-Cookie") == "" {
+		t.Error("expected a session cookie to be set before redirecting")
+	}
+}
