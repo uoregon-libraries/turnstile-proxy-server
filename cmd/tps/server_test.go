@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -410,6 +411,7 @@ func TestChallengeNavigationOnly(t *testing.T) {
 
 func TestTokenMatchesClient(t *testing.T) {
 	s := &Server{
+		logger:        slog.Default(),
 		jwtSigningKey: []byte("test-key"),
 		tokenLifetime: time.Hour,
 		bindUserAgent: true,
@@ -442,5 +444,72 @@ func TestTokenMatchesClient(t *testing.T) {
 	off := &Server{jwtSigningKey: s.jwtSigningKey, requestBudget: 1000}
 	if !off.tokenMatchesClient(unbound, solver) {
 		t.Error("token rejected even though no fingerprint applies")
+	}
+}
+
+func TestStripConditionalHeaders(t *testing.T) {
+	orig := http.Header{
+		"If-None-Match":       {`"abc123"`},
+		"If-Modified-Since":   {"Wed, 21 Oct 2025 07:28:00 GMT"},
+		"If-Match":            {`"abc123"`},
+		"If-Unmodified-Since": {"Wed, 21 Oct 2025 07:28:00 GMT"},
+		"If-Range":            {`"abc123"`},
+		"User-Agent":          {"Mozilla/5.0"},
+		"Accept":              {"text/html"},
+	}
+
+	stripped := stripConditionalHeaders(orig)
+
+	for _, name := range conditionalHeaders {
+		if stripped.Get(name) != "" {
+			t.Errorf("conditional header %q survived stripping", name)
+		}
+		// The cached original must be left intact for any later use.
+		if orig.Get(name) == "" {
+			t.Errorf("stripping mutated the source header %q", name)
+		}
+	}
+	if stripped.Get("User-Agent") != "Mozilla/5.0" {
+		t.Error("non-conditional header User-Agent was dropped")
+	}
+	if stripped.Get("Accept") != "text/html" {
+		t.Error("non-conditional header Accept was dropped")
+	}
+}
+
+func TestIssueTokenRedirectsForGet(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := NewServer(gin.New(), db.NewNoopStore()).
+		SetJWTSigningKey("test-key").
+		SetProxyTarget("http://backend:8080")
+
+	const reqID = "req-1"
+	origURL := httptest.NewRequest(http.MethodGet, "/protected/big-file?page=2", nil).URL
+	s.requestCache.Set(reqID, &cachedRequest{
+		Method:  http.MethodGet,
+		URL:     origURL,
+		Headers: http.Header{},
+	}, cache.DefaultExpiration)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	// The challenge form POSTs to the original URL; that POST is what reaches
+	// issueTokenAndReplay.
+	c.Request = httptest.NewRequest(http.MethodPost, "/protected/big-file?page=2", nil)
+
+	s.issueTokenAndReplay(c, reqID)
+
+	// Assert gin's buffered status rather than rec.Code: on a POST redirect
+	// http.Redirect writes no body, so gin only flushes the status to the
+	// recorder during its engine's end-of-handler pass, which a direct call
+	// skips. (Routed through the engine this really is a 303.)
+	if c.Writer.Status() != http.StatusSeeOther {
+		t.Fatalf("got status %d, want %d (POST/Redirect/GET)", c.Writer.Status(), http.StatusSeeOther)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/protected/big-file?page=2" {
+		t.Errorf("Location = %q, want the original GET URL", loc)
+	}
+	if rec.Header().Get("Set-Cookie") == "" {
+		t.Error("expected a session cookie to be set before redirecting")
 	}
 }

@@ -308,7 +308,13 @@ func (s *Server) tokenMatchesClient(token *jwt.Token, c *gin.Context) bool {
 		return false
 	}
 	var got, _ = claims["bnd"].(string)
-	return got == want
+	if got != want {
+		s.logger.Debug("Token binding mismatch",
+			"want", want, "got", got, "clientIP", c.ClientIP(),
+			"userAgent", c.Request.UserAgent())
+		return false
+	}
+	return true
 }
 
 // chargeToken debits the token's request budget for the current request: a
@@ -616,12 +622,38 @@ func (s *Server) replayRequest(c *gin.Context, req *http.Request) {
 		c.String(http.StatusBadGateway, "No proxy target configured for this request")
 		return
 	}
+	s.logger.Debug("Replaying request to backend",
+		"method", req.Method, "path", req.URL.Path, "target", target.String())
 	var director = func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		req.Host = target.Host
 	}
-	var proxy = &httputil.ReverseProxy{Director: director}
+	var proxy = &httputil.ReverseProxy{
+		Director: director,
+		// Log what the backend actually returned. A "blank screen" after a
+		// challenge usually means the backend replied with an empty body, a
+		// redirect, or an unexpected status, so surface the essentials.
+		ModifyResponse: func(resp *http.Response) error {
+			s.logger.Debug("Backend responded to replayed request",
+				"path", req.URL.Path,
+				"status", resp.StatusCode,
+				"contentLength", resp.ContentLength,
+				"contentType", resp.Header.Get("Content-Type"),
+				"contentEncoding", resp.Header.Get("Content-Encoding"),
+				"location", resp.Header.Get("Location"))
+			return nil
+		},
+		// The default ErrorHandler writes a 502 with an EMPTY body and logs
+		// nothing useful here, which itself looks like a blank screen. Make
+		// the failure visible in both the logs and the response.
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			s.logger.Error("Backend proxy error while replaying request",
+				"path", req.URL.Path, "target", target.String(), "error", err)
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("Upstream request failed"))
+		},
+	}
 	proxy.ServeHTTP(c.Writer, req)
 }
 
@@ -655,6 +687,13 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	}
 
 	var secure = c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	s.logger.Debug("Issuing session cookie after successful challenge",
+		"jti", jti,
+		"secure", secure,
+		"tls", c.Request.TLS != nil,
+		"xForwardedProto", c.GetHeader("X-Forwarded-Proto"),
+		"bound", claimsMap["bnd"] != nil,
+		"requestID", requestID)
 	c.SetCookie(cookieName, tokenString, int(s.tokenLifetime.Seconds()), "/", "", secure, true)
 
 	var cachedReqInterface, ok = s.requestCache.Get(requestID)
@@ -665,6 +704,21 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	}
 
 	var cachedReq = cachedReqInterface.(*cachedRequest)
+
+	// For a GET, use POST/Redirect/GET: the challenge was solved via a form
+	// POST to the original URL, so the browser's history entry for that URL is
+	// now a POST. Replaying the GET inline would render the page once, but a
+	// refresh re-submits the POST and the backend 404s (or 405s). Redirect to
+	// the original URL instead; the cookie set above lets the follow-up GET
+	// through, and the browser's history entry becomes a clean GET. Non-GET
+	// originals (e.g. an API POST) can't be turned into a GET, so they are
+	// still replayed inline.
+	if cachedReq.Method == http.MethodGet {
+		s.logger.Debug("Redirecting to original GET after challenge", "URL", cachedReq.URL.String())
+		c.Redirect(http.StatusSeeOther, cachedReq.URL.String())
+		return
+	}
+
 	s.logger.Debug("Replaying request", "Method", cachedReq.Method, "URL", cachedReq.URL)
 
 	var req, reqErr = http.NewRequest(cachedReq.Method, cachedReq.URL.String(), bytes.NewReader(cachedReq.Body))
@@ -673,6 +727,34 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 		c.String(http.StatusInternalServerError, "Could not replay original request")
 		return
 	}
-	req.Header = cachedReq.Headers
+	req.Header = stripConditionalHeaders(cachedReq.Headers)
 	s.replayRequest(c, req)
+}
+
+// conditionalHeaders are request headers that ask the backend to answer with a
+// bodyless 304/412 if the client's cached copy is still current. They are
+// meaningless on a post-challenge replay: the response is delivered as the
+// result of the challenge-form POST, where the browser has no cached entry to
+// revalidate, so a 304 renders as a blank page. We strip them so the replay
+// always yields a full response.
+var conditionalHeaders = []string{
+	"If-None-Match",
+	"If-Modified-Since",
+	"If-Match",
+	"If-Unmodified-Since",
+	"If-Range",
+}
+
+// stripConditionalHeaders returns a copy of h with the conditional/revalidation
+// headers removed. It clones first so the cached original request (which may
+// outlive this replay in the request cache) is left untouched.
+func stripConditionalHeaders(h http.Header) http.Header {
+	var out = h.Clone()
+	if out == nil {
+		return out
+	}
+	for _, name := range conditionalHeaders {
+		out.Del(name)
+	}
+	return out
 }
