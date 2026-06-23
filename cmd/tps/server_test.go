@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -410,6 +411,7 @@ func TestChallengeNavigationOnly(t *testing.T) {
 
 func TestTokenMatchesClient(t *testing.T) {
 	s := &Server{
+		logger:        slog.Default(),
 		jwtSigningKey: []byte("test-key"),
 		tokenLifetime: time.Hour,
 		bindUserAgent: true,

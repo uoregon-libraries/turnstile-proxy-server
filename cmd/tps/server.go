@@ -308,7 +308,13 @@ func (s *Server) tokenMatchesClient(token *jwt.Token, c *gin.Context) bool {
 		return false
 	}
 	var got, _ = claims["bnd"].(string)
-	return got == want
+	if got != want {
+		s.logger.Debug("Token binding mismatch",
+			"want", want, "got", got, "clientIP", c.ClientIP(),
+			"userAgent", c.Request.UserAgent())
+		return false
+	}
+	return true
 }
 
 // chargeToken debits the token's request budget for the current request: a
@@ -616,12 +622,38 @@ func (s *Server) replayRequest(c *gin.Context, req *http.Request) {
 		c.String(http.StatusBadGateway, "No proxy target configured for this request")
 		return
 	}
+	s.logger.Debug("Replaying request to backend",
+		"method", req.Method, "path", req.URL.Path, "target", target.String())
 	var director = func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		req.Host = target.Host
 	}
-	var proxy = &httputil.ReverseProxy{Director: director}
+	var proxy = &httputil.ReverseProxy{
+		Director: director,
+		// Log what the backend actually returned. A "blank screen" after a
+		// challenge usually means the backend replied with an empty body, a
+		// redirect, or an unexpected status, so surface the essentials.
+		ModifyResponse: func(resp *http.Response) error {
+			s.logger.Debug("Backend responded to replayed request",
+				"path", req.URL.Path,
+				"status", resp.StatusCode,
+				"contentLength", resp.ContentLength,
+				"contentType", resp.Header.Get("Content-Type"),
+				"contentEncoding", resp.Header.Get("Content-Encoding"),
+				"location", resp.Header.Get("Location"))
+			return nil
+		},
+		// The default ErrorHandler writes a 502 with an EMPTY body and logs
+		// nothing useful here, which itself looks like a blank screen. Make
+		// the failure visible in both the logs and the response.
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			s.logger.Error("Backend proxy error while replaying request",
+				"path", req.URL.Path, "target", target.String(), "error", err)
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("Upstream request failed"))
+		},
+	}
 	proxy.ServeHTTP(c.Writer, req)
 }
 
@@ -655,6 +687,13 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	}
 
 	var secure = c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	s.logger.Debug("Issuing session cookie after successful challenge",
+		"jti", jti,
+		"secure", secure,
+		"tls", c.Request.TLS != nil,
+		"xForwardedProto", c.GetHeader("X-Forwarded-Proto"),
+		"bound", claimsMap["bnd"] != nil,
+		"requestID", requestID)
 	c.SetCookie(cookieName, tokenString, int(s.tokenLifetime.Seconds()), "/", "", secure, true)
 
 	var cachedReqInterface, ok = s.requestCache.Get(requestID)
