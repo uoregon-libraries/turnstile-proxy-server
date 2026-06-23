@@ -26,4 +26,5 @@ services:
 
   caddy:
     ports:
-      - "8080:8080"
+      - "80:80"    # http, redirects to https
+      - "443:443"

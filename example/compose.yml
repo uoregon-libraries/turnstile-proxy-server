@@ -39,6 +39,11 @@ services:
 
   caddy:
     build: ./caddy
+    # SITE_HOST is the address Caddy serves the public HTTPS listener on (see
+    # caddy/Caddyfile). Defaults to localhost; override for LAN/IP access with
+    # e.g. `SITE_HOST=192.0.2.10 docker compose up` or a *.nip.io name.
+    environment:
+      SITE_HOST: "${SITE_HOST:-localhost}"
     depends_on:
       - tps
       - app

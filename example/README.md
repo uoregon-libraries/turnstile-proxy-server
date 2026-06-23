@@ -21,6 +21,31 @@ real-world app that needs more than a basic protection.
 
 The TPS configuration is very simple, and can be seen in the compose file.
 
+## Accessing the example (HTTPS)
+
+Caddy serves the public listener over https to better mimic production setups.
+Over plain HTTP the cookie is not `Secure`, which can hide TLS-specific bugs.
+
+The address comes from the `SITE_HOST` environment variable, defaulting to
+`localhost`:
+
+```bash
+docker compose up                               # https://localhost
+SITE_HOST=192.0.2.10 docker compose up          # https://192.0.2.10 (raw IP)
+SITE_HOST=192-0-2-10.nip.io docker compose up   # magic wildcard DNS
+```
+
+You can use `nip.io`/`sslip.io` to get a "real" hostname if needed, but beyond
+debugging weird problems this won't be necessary for most users.
+
+Caddy issues the certificate from its own internal CA, so your browser will
+warn the first time. To silence the warning, trust Caddy's root CA:
+
+```bash
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./tps-root.crt
+# then import tps-root.crt into your browser/OS trust store
+```
+
 ## Protecting assets that Caddy serves itself
 
 The example demonstrates two protection patterns, both handled by a single
@@ -41,9 +66,9 @@ is served — no loop.
 
 The relevant pieces:
 
-- `caddy/Caddyfile` — the public `:8080` listener routes both `/protected/*`
-  and `/static-protected/*` to `tps`; the internal `:8081` listener is a
-  plain `file_server` with no Turnstile rules.
+- `caddy/Caddyfile` — the public `https://{$SITE_HOST}` listener routes both
+  `/protected/*` and `/static-protected/*` to `tps`; the internal `:8081`
+  listener is a plain `file_server` with no Turnstile rules.
 - `compose.yml` — `tps` has
   `PROXY_TARGETS="/protected/=http://app:8080,/static-protected/=http://caddy:8081"`,
   and port `8081` is deliberately not published, so the internal listener is

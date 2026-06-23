@@ -1,5 +1,4 @@
 {
-  http_port 8080
   debug
   servers {
     trusted_proxies static {$TRUSTED_PROXIES:private_ranges}
@@ -11,7 +10,17 @@
 # Public-facing listener. Both protected prefixes route to the same TPS
 # instance, which decides per-request which backend to proxy to based on
 # its PROXY_TARGETS config. Everything else goes straight to the app.
-:8080 {
+#
+# SITE_HOST controls the address (and TLS cert) of this listener; it defaults
+# to "localhost" so `docker compose up` just works on the same machine. Set it
+# to whatever clients use to reach this box and Caddy will serve HTTPS there
+# with a cert from its own internal CA — this works for hostnames, raw IPs
+# (e.g. SITE_HOST=192.0.2.10), and magic wildcard DNS names
+# (e.g. SITE_HOST=192-0-2-10.nip.io). Serving HTTPS is what makes this example
+# behave like production: Caddy adds `X-Forwarded-Proto: https`, so TPS marks
+# its session cookie Secure, exercising the same cookie path prod uses.
+https://{$SITE_HOST:localhost} {
+  tls internal
   log
 
   # In production you usually want static assets to bypass TPS so page loads
