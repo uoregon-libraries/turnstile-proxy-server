@@ -55,6 +55,10 @@ type Event struct {
 // silently discard entries (see [NewNoopStore]).
 type Store interface {
 	LogEvent(e Event)
+	// Report aggregates recorded events into fixed-width, time-aligned buckets
+	// over [start, end). See [sqliteStore.Report]. Implementations without a
+	// backing table return [ErrReportingUnavailable].
+	Report(start, end time.Time, bucket time.Duration) ([]CountBucket, error)
 	Close() error
 }
 
@@ -286,3 +290,7 @@ func NewNoopStore() Store { return noopStore{} }
 
 func (noopStore) LogEvent(Event) {}
 func (noopStore) Close() error   { return nil }
+
+func (noopStore) Report(time.Time, time.Time, time.Duration) ([]CountBucket, error) {
+	return nil, ErrReportingUnavailable
+}

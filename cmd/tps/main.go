@@ -36,6 +36,7 @@ var tokenBindUserAgent bool
 var tokenRequestBudget int
 var tokenIPSwitchCost int
 var challengeNavigationOnly bool
+var adminSecret string
 
 var logger *slog.Logger
 
@@ -129,6 +130,11 @@ func help() {
 	fmt.Println("                 Sec-Fetch-Mode header) and proxies everything else through with no token needed.")
 	fmt.Println("                 Use \"navigation\" for single-page apps whose background API calls can't render a")
 	fmt.Println("                 challenge page; note it leaves the API endpoints open to bots. See the README.")
+	fmt.Println("- ADMIN_SECRET (optional): shared secret unlocking the analytics endpoints under /.tps/:")
+	fmt.Println("                 /.tps/report (JSON stats) and /.tps/watch[.html] (live event stream + viewer).")
+	fmt.Println("                 Unset disables them (404). When set, present it as a bearer token or ?key=. The")
+	fmt.Println("                 public /.tps/beacon (JS-execution signal) is unaffected. Route /.tps/ to TPS in")
+	fmt.Println("                 your front proxy; see the README for safe exposure.")
 }
 
 func serve() {
@@ -162,6 +168,7 @@ func serve() {
 		SetClientBinding(tokenBindUserAgent).
 		SetRequestBudget(tokenRequestBudget, tokenIPSwitchCost).
 		SetChallengeNavigationOnly(challengeNavigationOnly).
+		SetAdminSecret(adminSecret).
 		SetLogger(logger.With("log.source", "main.Server"))
 
 	server.LoadCoreTemplates("internal/templates/*.go.html", templates.FS)

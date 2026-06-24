@@ -68,6 +68,7 @@ func getenv() {
 	jwtSigningKey = os.Getenv("JWT_SIGNING_KEY")
 	logDBPath = os.Getenv("LOG_DB_PATH")
 	templatePath = os.Getenv("TEMPLATE_PATH")
+	adminSecret = os.Getenv("ADMIN_SECRET")
 
 	var errs []string
 	if bindAddr == "" {

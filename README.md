@@ -214,6 +214,135 @@ One deployment note for DSpace specifically: the Angular frontend's
 server-side rendering makes its own calls to the REST backend. Route that
 server-to-server traffic directly to the backend, not through TPS.
 
+## Analytics & live monitoring
+
+TPS exposes its own endpoints under a reserved, collision-resistant path prefix,
+`/.tps/` (the leading dot keeps it clear of real application routes, the same way
+Anubis uses `/.within.website/`). Anything under `/.tps/` is always handled by
+TPS itself and is never proxied to a backend or challenged.
+
+There are three endpoints:
+
+- **`/.tps/report`** — JSON challenge statistics.
+- **`/.tps/watch`** and **`/.tps/watch.html`** — a live event stream and a small
+  browser viewer.
+- **`/.tps/beacon`** — used internally by the challenge page (see "Smart vs. dumb
+  bots" below). You don't call this yourself.
+
+### Exposing `/.tps/` (read this first)
+
+TPS is meant to sit on a private network behind your real proxy, **not** be
+generally reachable from the web. For any of these endpoints to work at all, your
+front proxy has to route `/.tps/` to TPS. But `report` and `watch` reveal traffic
+data, so they must not be open to the world. Two rules:
+
+1. **`report` and `watch` are opt-in and authenticated.** They are disabled
+   entirely (they return `404`) unless you set `ADMIN_SECRET`. When set, every
+   request must present the secret either as `Authorization: Bearer <secret>` or
+   as a `?key=<secret>` query parameter (the query form is there because the
+   browser `EventSource` API used by the live viewer can't send headers).
+2. **`beacon` is always public.** It only records that a challenged client ran
+   JavaScript and carries no data back to the caller, so it's safe to expose. It
+   must be reachable by ordinary (challenged) visitors for the smart/dumb signal
+   to work.
+
+On top of the secret, lock the analytics endpoints down at your front proxy.
+Good options, roughly in order of preference:
+
+- Don't expose `report`/`watch` publicly at all — reach them over an SSH tunnel
+  or from inside the private network (e.g. `curl -H 'Authorization: Bearer …'
+  http://tps:8080/.tps/report?period=7d`).
+- Or expose them on an internal-only hostname / port, or behind an IP allowlist
+  and/or HTTP basic auth in Caddy/nginx, *in addition to* `ADMIN_SECRET`.
+
+A minimal Caddy sketch that keeps the beacon public but gates the rest by client
+IP (the `ADMIN_SECRET` is still required as a second factor):
+
+```caddyfile
+# Public: let challenged visitors hit the beacon.
+handle /.tps/beacon {
+    reverse_proxy tps:8080
+}
+
+# Restricted: only the office network can even reach report/watch
+# (ADMIN_SECRET is still required on top of this).
+@admin path /.tps/*
+handle @admin {
+    @notallowed not remote_ip 203.0.113.0/24
+    respond @notallowed 403
+    reverse_proxy tps:8080
+}
+```
+
+### `/.tps/report`
+
+`GET /.tps/report?period=<1d|7d|1m|1y>` returns counts bucketed at a granularity
+that suits the span. `period` defaults to `1d`.
+
+| period | bucket width | rows |
+| ------ | ------------ | ---- |
+| `1d`   | 1 hour       | 24   |
+| `7d`   | 12 hours     | 14   |
+| `1m`   | 1 day        | 30   |
+| `1y`   | 2 weeks      | 26   |
+
+Buckets are aligned to UTC boundaries, and the most recent (partial) bucket is
+included. Each bucket reports four counts:
+
+- `challenged` — challenge pages served (the "raw" number).
+- `rendered` — challenge pages whose JavaScript actually ran (see below). The
+  difference `challenged - rendered` approximates clients that never execute JS.
+- `solved` — Turnstile solutions that verified with Cloudflare.
+- `failed` — Turnstile solutions that were submitted but failed verification.
+
+```json
+{
+  "period": "1d",
+  "bucket": "1h0m0s",
+  "start": "2026-06-23T10:00:00Z",
+  "end": "2026-06-24T10:00:00Z",
+  "buckets": [
+    { "start": "2026-06-23T10:00:00Z", "challenged": 42, "rendered": 9, "solved": 7, "failed": 1 }
+  ]
+}
+```
+
+Reporting needs the event log, so it returns `503` when `LOG_DB_PATH` is unset.
+
+### Smart vs. dumb bots (`rendered` / the beacon)
+
+`solved` and `failed` already tell you about clients that ran the Turnstile
+widget. What they can't tell you is whether a client executes JavaScript *at
+all* — the cheapest way to separate real browsers from header-only scrapers. The
+embedded challenge page pings `/.tps/beacon` as soon as its JavaScript runs, and
+that ping is logged as a `rendered` event. Clients that never run JS never hit
+the beacon, so `challenged` minus `rendered` is your "dumb bot" floor.
+
+If you use [custom challenge templates](#customize-ui), keep the
+`navigator.sendBeacon('/.tps/beacon')` snippet from the core template, or you
+lose this signal for those paths.
+
+### `/.tps/watch` (live events)
+
+`GET /.tps/watch.html?key=<secret>` opens a live, auto-scrolling view of every
+decision as it happens. Each client is shown under a stable, readable name like
+"Purple Armadillo" (derived from its token id, or its masked IP + User-Agent when
+it has no token yet) instead of an opaque id, so you can follow one visitor
+across requests at a glance.
+
+`/.tps/watch` itself is the raw [Server-Sent Events][sse] stream behind the
+viewer, if you'd rather consume it with your own tooling:
+
+```bash
+curl -N -H 'Authorization: Bearer <secret>' http://tps:8080/.tps/watch
+```
+
+The live view is best-effort: a slow consumer has events dropped rather than
+slowing the request path, and the stream is real-time only (it doesn't replay
+history — use `report` or query the SQLite log for that).
+
+[sse]: <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events>
+
 ## Usage
 
 Build via `make`, and run via `./bin/tps [serve|help]`. For local dev work, you

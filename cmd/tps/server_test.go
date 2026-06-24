@@ -206,7 +206,7 @@ func TestChargeToken(t *testing.T) {
 		s := newBudgetServer(0, 10)
 		token := signAndParse(t, s, claims(""))
 		for i := 0; i < 100; i++ {
-			if !charged(s,token, newTestContext(t, "Mozilla/5.0", "192.0.2.55")) {
+			if !charged(s, token, newTestContext(t, "Mozilla/5.0", "192.0.2.55")) {
 				t.Fatal("request rejected with the budget disabled")
 			}
 		}
@@ -215,7 +215,7 @@ func TestChargeToken(t *testing.T) {
 	t.Run("missing jti is rejected", func(t *testing.T) {
 		s := newBudgetServer(1000, 10)
 		token := signAndParse(t, s, claims(""))
-		if charged(s,token, newTestContext(t, "Mozilla/5.0", "192.0.2.55")) {
+		if charged(s, token, newTestContext(t, "Mozilla/5.0", "192.0.2.55")) {
 			t.Error("token without a jti claim accepted while a budget is enabled")
 		}
 	})
@@ -225,14 +225,14 @@ func TestChargeToken(t *testing.T) {
 		token := signAndParse(t, s, claims("token-a"))
 		c := newTestContext(t, "Mozilla/5.0", "192.0.2.55")
 		for i := 0; i < 5; i++ {
-			if !charged(s,token, c) {
+			if !charged(s, token, c) {
 				t.Fatalf("request %d rejected before the budget was spent", i+1)
 			}
 		}
-		if charged(s,token, c) {
+		if charged(s, token, c) {
 			t.Error("request accepted after the budget was spent")
 		}
-		if charged(s,token, c) {
+		if charged(s, token, c) {
 			t.Error("exhausted token recovered without a new challenge")
 		}
 	})
@@ -243,16 +243,16 @@ func TestChargeToken(t *testing.T) {
 		ipA := newTestContext(t, "Mozilla/5.0", "192.0.2.55")
 		ipB := newTestContext(t, "Mozilla/5.0", "203.0.113.7")
 
-		if !charged(s,token, ipA) { // spent 1
+		if !charged(s, token, ipA) { // spent 1
 			t.Fatal("first request rejected")
 		}
-		if !charged(s,token, ipB) { // switch: spent 4
+		if !charged(s, token, ipB) { // switch: spent 4
 			t.Fatal("request after IP switch rejected with budget remaining")
 		}
-		if !charged(s,token, ipB) { // settled on B: spent 5
+		if !charged(s, token, ipB) { // settled on B: spent 5
 			t.Fatal("request from the new IP charged more than 1 after settling")
 		}
-		if charged(s,token, ipB) {
+		if charged(s, token, ipB) {
 			t.Error("request accepted after switch surcharges spent the budget")
 		}
 	})
@@ -265,11 +265,11 @@ func TestChargeToken(t *testing.T) {
 
 		// A=1, B=3, A=3, B=3 -> spent 10; next request can't be covered
 		for i, c := range []*gin.Context{ipA, ipB, ipA, ipB} {
-			if !charged(s,token, c) {
+			if !charged(s, token, c) {
 				t.Fatalf("flap %d rejected with budget remaining", i+1)
 			}
 		}
-		if charged(s,token, ipA) {
+		if charged(s, token, ipA) {
 			t.Error("request accepted after flapping spent the budget")
 		}
 	})
@@ -278,16 +278,16 @@ func TestChargeToken(t *testing.T) {
 		s := newBudgetServer(5, 3)
 		token := signAndParse(t, s, claims("token-d"))
 
-		if !charged(s,token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:aaaa::1")) {
+		if !charged(s, token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:aaaa::1")) {
 			t.Fatal("first request rejected")
 		}
 		// Same /64 (privacy-extension rotation), so this costs 1 (spent 2),
 		// not the surcharge (spent 4)
-		if !charged(s,token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:bbbb::2")) {
+		if !charged(s, token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:bbbb::2")) {
 			t.Fatal("request within the /64 rejected")
 		}
 		for i := 0; i < 3; i++ {
-			if !charged(s,token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:bbbb::2")) {
+			if !charged(s, token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:bbbb::2")) {
 				t.Errorf("request %d rejected: movement within the /64 was surcharged", i+3)
 			}
 		}
@@ -299,10 +299,10 @@ func TestChargeToken(t *testing.T) {
 		solver := newTestContext(t, "Mozilla/5.0", "192.0.2.55")
 		s.budgetCache.Set("token-e", &budgetState{lastIP: s.maskClientIP(solver.ClientIP())}, time.Minute)
 
-		if charged(s,token, newTestContext(t, "Mozilla/5.0", "203.0.113.7")) {
+		if charged(s, token, newTestContext(t, "Mozilla/5.0", "203.0.113.7")) {
 			t.Error("surcharge larger than the budget accepted on the first request after a switch")
 		}
-		if !charged(s,token, solver) {
+		if !charged(s, token, solver) {
 			t.Error("solver's own request rejected")
 		}
 	})
@@ -352,6 +352,10 @@ func (f *fakeStore) LogEvent(e db.Event) {
 }
 
 func (f *fakeStore) Close() error { return nil }
+
+func (f *fakeStore) Report(time.Time, time.Time, time.Duration) ([]db.CountBucket, error) {
+	return nil, db.ErrReportingUnavailable
+}
 
 func (f *fakeStore) snapshot() []db.Event {
 	f.mu.Lock()

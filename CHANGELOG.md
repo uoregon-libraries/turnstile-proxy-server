@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### New features
+
+- **Analytics endpoints under the reserved `/.tps/` path.** A collision-resistant
+  prefix (leading dot, à la Anubis's `/.within.website/`) that TPS always handles
+  itself and never proxies:
+  - **`/.tps/report?period=1d|7d|1m|1y`** returns JSON challenge stats bucketed at
+    a sensible granularity for the span (24×1h, 14×12h, 30×1d, 26×2w), counting
+    challenges presented, JS-rendered, solved, and failed per bucket.
+  - **`/.tps/watch`** (Server-Sent Events) and **`/.tps/watch.html`** (a built-in
+    live viewer) stream decisions in real time, labelling each client with a
+    stable friendly name like "Purple Armadillo" instead of an opaque id.
+- **Smart-vs-dumb-bot signal.** The challenge page now pings **`/.tps/beacon`**
+  when its JavaScript executes, recorded as a new `challenge_rendered` event;
+  `challenged - rendered` approximates clients that never run JS. Custom
+  templates should keep the beacon snippet to preserve the signal.
+- **`ADMIN_SECRET`** gates `/.tps/report` and `/.tps/watch` (bearer token or
+  `?key=`); unset disables them (404), so they're strictly opt-in. The beacon is
+  always public. The README's "Analytics & live monitoring" section covers
+  exposing these safely, since TPS is not meant to face the web directly.
+
 ## v1.1.1
 
 This release adds multi-backend routing, substantially hardens challenge tokens
