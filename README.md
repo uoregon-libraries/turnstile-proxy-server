@@ -29,12 +29,15 @@ up. Once set, you can simply compile (with `make`) and run.
   Like your value for nginx or Caddy's proxy target, the target URL is how TPS
   finds your service so it can proxy to protected content after a turnstile
   challenge is successful.
-- `DATABASE_DSN` (optional): DSN for the MariaDB database, which stores
-  various stats for analysis. e.g.,
-  `user:pass@tcp(host:3306)/dbname?parseTime=true`. If unset, request logging
-  is disabled.
-  - The `parseTime` argument is important for something I no longer recall, but
-    it really is important, so make sure you have that!
+- `LOG_DB_PATH` (optional): filesystem path to an embedded SQLite database
+  where TPS records one decision event per request (challenge served, verified,
+  proxied, navigation-mode skip, etc.) for later analysis. The file is created
+  if it doesn't exist. If unset, event logging is disabled. Query it with the
+  `sqlite3` CLI, e.g.
+  `sqlite3 tps.db 'SELECT outcome, reason, COUNT(*) FROM events GROUP BY 1, 2;'`.
+- `LOG_RETENTION` (optional): how long to keep logged events, as a Go duration
+  string (`"720h"`). Events older than this are pruned hourly. Defaults to
+  `720h` (30 days); `"0"` keeps events forever.
 - `TEMPLATE_PATH`: If you have custom templates, this is where they'll live.
   See the section below on customizing the UI.
 - `TOKEN_LIFETIME` (optional): how long a solved challenge stays valid, as a

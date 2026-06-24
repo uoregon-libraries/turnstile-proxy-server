@@ -28,7 +28,8 @@ var turnstileSecretKey string
 var turnstileSiteKey string
 var jwtSigningKey string
 var proxyTargets []proxyRoute
-var databaseDSN string
+var logDBPath string
+var logRetention time.Duration
 var templatePath string
 var tokenLifetime time.Duration
 var tokenBindUserAgent bool
@@ -107,8 +108,11 @@ func help() {
 	fmt.Println("                 Longest matching prefix wins. Either PROXY_TARGETS or PROXY_TARGET must be set.")
 	fmt.Println("- PROXY_TARGET: legacy single-target form, equivalent to PROXY_TARGETS=\"/=<url>\". Ignored if")
 	fmt.Println("                 PROXY_TARGETS is set.")
-	fmt.Println("- DATABASE_DSN (optional): DSN for the MariaDB database, e.g., user:pass@tcp(host:3306)/dbname?parseTime=true.")
-	fmt.Println("                            If unset, request logging is disabled.")
+	fmt.Println("- LOG_DB_PATH (optional): filesystem path to the SQLite event-log database, e.g.,")
+	fmt.Println("                 /var/local/tps/tps.db. The file (and its WAL siblings) is created if absent.")
+	fmt.Println("                 If unset, event logging is disabled.")
+	fmt.Println(`- LOG_RETENTION (optional): how long to keep logged events, as a Go duration ("720h").`)
+	fmt.Println(`                 Defaults to "720h" (30 days). "0" keeps events forever (no pruning).`)
 	fmt.Println("- TEMPLATE_PATH (optional): path to external templates, defaults to /var/local/tps/templates")
 	fmt.Println(`- TOKEN_LIFETIME (optional): how long a solved challenge stays valid, as a Go duration ("30m",`)
 	fmt.Println(`                 "2h"). Defaults to "4h". Shorter lifetimes force bots to re-solve more often.`)
@@ -131,14 +135,14 @@ func serve() {
 	getenv()
 
 	var store db.Store
-	if databaseDSN == "" {
-		logger.Info("DATABASE_DSN is not set; request logging is disabled")
+	if logDBPath == "" {
+		logger.Info("LOG_DB_PATH is not set; event logging is disabled")
 		store = db.NewNoopStore()
 	} else {
 		var err error
-		store, err = db.NewStore(databaseDSN, logger)
+		store, err = db.NewStore(logDBPath, logRetention, logger)
 		if err != nil {
-			logger.Error("Cannot open database", "error", err)
+			logger.Error("Cannot open event log database", "error", err)
 			os.Exit(1)
 		}
 	}

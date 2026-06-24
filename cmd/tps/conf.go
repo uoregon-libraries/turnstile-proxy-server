@@ -66,7 +66,7 @@ func getenv() {
 	turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")
 	turnstileSiteKey = os.Getenv("TURNSTILE_SITE_KEY")
 	jwtSigningKey = os.Getenv("JWT_SIGNING_KEY")
-	databaseDSN = os.Getenv("DATABASE_DSN")
+	logDBPath = os.Getenv("LOG_DB_PATH")
 	templatePath = os.Getenv("TEMPLATE_PATH")
 
 	var errs []string
@@ -109,6 +109,16 @@ func getenv() {
 			errs = append(errs, fmt.Sprintf("TOKEN_LIFETIME %q must be a positive Go duration such as 30m or 2h", raw))
 		} else {
 			tokenLifetime = d
+		}
+	}
+
+	logRetention = 720 * time.Hour
+	if raw := os.Getenv("LOG_RETENTION"); raw != "" {
+		var d, derr = time.ParseDuration(raw)
+		if derr != nil || d < 0 {
+			errs = append(errs, fmt.Sprintf(`LOG_RETENTION %q must be a non-negative Go duration such as 720h, or 0 to keep events forever`, raw))
+		} else {
+			logRetention = d
 		}
 	}
 
