@@ -554,6 +554,15 @@ func isNavigationRequest(r *http.Request) bool {
 }
 
 func (s *Server) handleProxy(c *gin.Context) {
+	// The reserved admin prefix is always handled by TPS itself and is never
+	// proxied or challenged. It is checked before everything else so these
+	// internal endpoints can't be shadowed by a backend path or skipped in
+	// navigation mode.
+	if strings.HasPrefix(c.Request.URL.Path, adminPathPrefix) {
+		s.handleAdmin(c)
+		return
+	}
+
 	if s.navigationOnly && !isNavigationRequest(c.Request) {
 		s.logger.Debug("Non-navigation request in navigation-only mode, proxying without challenge",
 			"URL", c.Request.URL.String())

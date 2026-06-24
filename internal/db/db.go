@@ -16,11 +16,12 @@ import (
 // Outcome enumerates what TPS decided to do with a request. Each handled
 // request produces exactly one event.
 const (
-	OutcomeProxied    = "proxied"     // request had a valid token and was sent upstream
-	OutcomeChallenged = "challenged"  // a Turnstile challenge page was served
-	OutcomeVerifyOK   = "verify_ok"   // a challenge solution verified successfully
-	OutcomeVerifyFail = "verify_fail" // a challenge solution failed verification
-	OutcomeNavSkip    = "nav_skip"    // navigation-mode bypass (not a top-level navigation)
+	OutcomeProxied           = "proxied"            // request had a valid token and was sent upstream
+	OutcomeChallenged        = "challenged"         // a Turnstile challenge page was served
+	OutcomeChallengeRendered = "challenge_rendered" // a served challenge page's JS executed (beacon)
+	OutcomeVerifyOK          = "verify_ok"          // a challenge solution verified successfully
+	OutcomeVerifyFail        = "verify_fail"        // a challenge solution failed verification
+	OutcomeNavSkip           = "nav_skip"           // navigation-mode bypass (not a top-level navigation)
 )
 
 // Reason gives more detail about an outcome (why a challenge was served, or how
