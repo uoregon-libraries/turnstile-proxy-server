@@ -37,7 +37,10 @@ up. Once set, you can simply compile (with `make`) and run.
   `sqlite3 tps.db 'SELECT outcome, reason, COUNT(*) FROM events GROUP BY 1, 2;'`.
 - `LOG_RETENTION` (optional): how long to keep logged events, as a Go duration
   string (`"720h"`). Events older than this are pruned hourly. Defaults to
-  `720h` (30 days); `"0"` keeps events forever.
+  `720h` (30 days); `"0"` keeps events forever. Retention applies only to the
+  detailed per-request log: the hourly aggregates that feed `/.tps/report` are
+  tiny and are kept forever, so reports still cover long periods even with a
+  short retention (e.g. `"24h"`).
 - `TEMPLATE_PATH`: If you have custom templates, this is where they'll live.
   See the section below on customizing the UI.
 - `TOKEN_LIFETIME` (optional): how long a solved challenge stays valid, as a

@@ -56,8 +56,9 @@ type Event struct {
 type Store interface {
 	LogEvent(e Event)
 	// Report aggregates recorded events into fixed-width, time-aligned buckets
-	// over [start, end). See [sqliteStore.Report]. Implementations without a
-	// backing table return [ErrReportingUnavailable].
+	// over [start, end), reading from hourly rollups rather than the raw event
+	// log. See [sqliteStore.Report]. Implementations without a backing table
+	// return [ErrReportingUnavailable].
 	Report(start, end time.Time, bucket time.Duration) ([]CountBucket, error)
 	Close() error
 }
@@ -86,9 +87,11 @@ type sqliteStore struct {
 }
 
 // NewStore opens (creating if needed) a SQLite-backed [Store] at path, creates
-// the events table, and starts the background writer. If retention is greater
-// than zero, events older than retention are pruned hourly; retention <= 0
-// disables pruning (events are kept forever).
+// the events and rollups tables, and starts the background writer. If retention
+// is greater than zero, events older than retention are pruned hourly;
+// retention <= 0 disables pruning (events are kept forever). Retention applies
+// only to raw events: the hourly rollups that feed [Store.Report] are tiny and
+// are kept forever, so reports remain available long past the raw-log window.
 func NewStore(path string, retention time.Duration, logger *slog.Logger) (Store, error) {
 	// WAL + a busy timeout keep the single writer happy alongside ad-hoc
 	// readers (e.g. the sqlite3 CLI) running analytics queries.
@@ -142,8 +145,36 @@ func (s *sqliteStore) migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_events_ts  ON events(ts);
 	CREATE INDEX IF NOT EXISTS idx_events_jti ON events(jti);
+
+	CREATE TABLE IF NOT EXISTS rollups(
+		bucket_ts INTEGER NOT NULL,
+		outcome   TEXT NOT NULL,
+		n         INTEGER NOT NULL,
+		PRIMARY KEY (bucket_ts, outcome)
+	) WITHOUT ROWID;
 	`
-	var _, err = s.db.Exec(query)
+	if _, err := s.db.Exec(query); err != nil {
+		return err
+	}
+	return s.backfillRollups()
+}
+
+// backfillRollups populates the rollups table from raw events the first time a
+// pre-rollup database is opened. Rollup rows are never deleted and every event
+// write also updates them, so an empty rollups table alongside existing events
+// can only mean the database predates the table.
+func (s *sqliteStore) backfillRollups() error {
+	var empty bool
+	if err := s.db.QueryRow("SELECT NOT EXISTS (SELECT 1 FROM rollups)").Scan(&empty); err != nil {
+		return err
+	}
+	if !empty {
+		return nil
+	}
+	var us = rollupBucket.Microseconds()
+	var _, err = s.db.Exec(`
+		INSERT INTO rollups (bucket_ts, outcome, n)
+		SELECT (ts / ?) * ?, outcome, COUNT(*) FROM events GROUP BY 1, 2;`, us, us)
 	return err
 }
 
@@ -238,6 +269,38 @@ func (s *sqliteStore) flush(batch []Event) {
 		if _, err = stmt.Exec(e.Timestamp.UnixMicro(), e.Outcome, e.Reason, e.ClientIP,
 			e.MaskedIP, e.Host, e.Path, e.Method, e.UserAgent, e.JTI, ipSwitch); err != nil {
 			s.logger.Error("Could not write event to log", "error", err)
+			tx.Rollback()
+			return
+		}
+	}
+
+	// Fold the batch's counts into the hourly rollups in the same transaction,
+	// so the raw log and its aggregates can never disagree.
+	type bucketOutcome struct {
+		ts      int64
+		outcome string
+	}
+	var counts = make(map[bucketOutcome]int)
+	var us = rollupBucket.Microseconds()
+	for _, e := range batch {
+		counts[bucketOutcome{(e.Timestamp.UnixMicro() / us) * us, e.Outcome}]++
+	}
+
+	var rstmt *sql.Stmt
+	rstmt, err = tx.Prepare(`
+	INSERT INTO rollups (bucket_ts, outcome, n) VALUES (?, ?, ?)
+	ON CONFLICT (bucket_ts, outcome) DO UPDATE SET n = n + excluded.n;
+	`)
+	if err != nil {
+		s.logger.Error("Could not prepare rollup upsert", "error", err)
+		tx.Rollback()
+		return
+	}
+	defer rstmt.Close()
+
+	for key, n := range counts {
+		if _, err = rstmt.Exec(key.ts, key.outcome, n); err != nil {
+			s.logger.Error("Could not update rollup", "error", err)
 			tx.Rollback()
 			return
 		}

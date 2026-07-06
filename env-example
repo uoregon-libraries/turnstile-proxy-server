@@ -31,7 +31,9 @@ PROXY_TARGET="http://localhost"
 LOG_DB_PATH="/var/local/tps/data/tps.db"
 
 # How long to keep logged events, as a Go duration string. Older events are
-# pruned hourly. Defaults to 720h (30 days); "0" keeps events forever.
+# pruned hourly. Defaults to 720h (30 days); "0" keeps events forever. Only the
+# detailed per-request log is pruned; the hourly aggregates behind /.tps/report
+# are kept forever, so a short retention still leaves long-term report data.
 LOG_RETENTION="720h"
 
 # Where are custom templates (if any) found?

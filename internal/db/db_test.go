@@ -80,6 +80,31 @@ func TestFlushIPSwitch(t *testing.T) {
 	}
 }
 
+// TestFlushAccumulatesRollups confirms that separate flushes hitting the same
+// hour bucket sum into one rollup row rather than replacing it.
+func TestFlushAccumulatesRollups(t *testing.T) {
+	var s = newTestStore(t, 0)
+	var ts = time.Date(2026, 6, 24, 3, 15, 0, 0, time.UTC)
+
+	s.flush([]Event{
+		{Timestamp: ts, Outcome: OutcomeChallenged},
+		{Timestamp: ts.Add(time.Minute), Outcome: OutcomeChallenged},
+	})
+	s.flush([]Event{{Timestamp: ts.Add(2 * time.Minute), Outcome: OutcomeChallenged}})
+
+	var n int
+	var err = s.db.QueryRow(
+		"SELECT n FROM rollups WHERE bucket_ts = ? AND outcome = ?",
+		ts.Truncate(time.Hour).UnixMicro(), OutcomeChallenged,
+	).Scan(&n)
+	if err != nil {
+		t.Fatalf("read rollup: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("rollup n = %d, want 3", n)
+	}
+}
+
 // TestPrune confirms retention deletes events older than the cutoff and keeps
 // newer ones.
 func TestPrune(t *testing.T) {
