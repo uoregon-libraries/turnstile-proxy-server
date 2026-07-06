@@ -1,26 +1,70 @@
 # Changelog
 
-## Unreleased
+## v2.0.0-rc1
+
+This release replaces the external MariaDB request log with an embedded SQLite
+event log that records every decision TPS makes, then builds analytics on top
+of it: a challenge-stats report endpoint and a beacon signal that separates
+clients which execute JavaScript from header-only scrapers. The major version
+bump is for the logging configuration change (`DATABASE_DSN` is gone); the
+proxy and challenge behavior itself is unchanged from 1.1.1.
+
+To sum up: **yes**, you read that right. *We finally have a TPS report.*
+
+### Breaking changes
+
+- **`DATABASE_DSN` is removed and MariaDB is no longer supported.** Logging now
+  writes to an SQLite database at **`LOG_DB_PATH`**; leaving it unset disables
+  logging entirely, same as an unset `DATABASE_DSN` did before. Old MariaDB
+  data is **not** migrated. The `db` service is gone from the compose stacks.
+  See Upgrade notes.
 
 ### New features
 
-- **Analytics endpoints under the reserved `/.tps/` path.** A collision-resistant
-  prefix (leading dot, à la Anubis's `/.within.website/`) that TPS always handles
-  itself and never proxies:
-  - **`/.tps/report?period=1d|7d|1m|1y`** returns JSON challenge stats bucketed at
-    a sensible granularity for the span (24×1h, 14×12h, 30×1d, 26×2w), counting
-    challenges presented, JS-rendered, solved, and failed per bucket.
-  - **`/.tps/watch`** (Server-Sent Events) and **`/.tps/watch.html`** (a built-in
-    live viewer) stream decisions in real time, labelling each client with a
-    stable friendly name like "Purple Armadillo" instead of an opaque id.
+- **Every decision is now logged, not just post-challenge requests.** Each
+  request produces one event (`challenged`, `proxied`, `verify_ok`,
+  `verify_fail`, `nav_skip`, `challenge_rendered`) with a reason (`no_cookie`,
+  `budget_exhausted`, `valid_token`, etc.), so challenges-served-vs-solved is
+  finally answerable. Writes are queued and batched in the background: the
+  request path never blocks or slows down the proxying behavior.
+- **`LOG_RETENTION`** (default `720h`, `0` = keep forever) prunes old raw
+  events hourly, keeping the database small.
+- **Analytics endpoints under the reserved `/.tps/` path.** A
+  collision-resistant prefix (leading dot, à la Anubis's `/.within.website/`)
+  that TPS always handles itself and never proxies:
+  - **`/.tps/report?period=1d|7d|1m|1y`** returns JSON challenge stats bucketed
+    at a sensible granularity for the span (24×1h, 14×12h, 30×1d, 26×2w),
+    counting challenges presented, JS-rendered, solved, and failed per bucket.
+  - Reports are served from an **hourly rollups table**, updated in the same
+    transaction as each event batch, so they stay cheap even on busy servers.
+    Rollups are never pruned (a few hundred tiny rows per day), so report
+    history reaches back beyond `LOG_RETENTION` — you can cut retention of the
+    detailed log to a day or less without losing report data. Existing
+    databases are backfilled from their raw events on first open.
 - **Smart-vs-dumb-bot signal.** The challenge page now pings **`/.tps/beacon`**
   when its JavaScript executes, recorded as a new `challenge_rendered` event;
   `challenged - rendered` approximates clients that never run JS. Custom
   templates should keep the beacon snippet to preserve the signal.
-- **`ADMIN_SECRET`** gates `/.tps/report` and `/.tps/watch` (bearer token or
-  `?key=`); unset disables them (404), so they're strictly opt-in. The beacon is
-  always public. The README's "Analytics & live monitoring" section covers
-  exposing these safely, since TPS is not meant to face the web directly.
+- **`ADMIN_SECRET`** gates `/.tps/report` (bearer token or `?key=`); unset
+  disables it (404), so it's strictly opt-in. The beacon is always public. The
+  README's "Analytics" section covers exposing the report endpoint safely,
+  since TPS is not meant to face the web directly.
+
+### Upgrade notes
+
+- **Logging config**:
+  - Remove `DATABASE_DSN` if you had it set, and drop the MariaDB
+    container/service/table if applicable
+  - To store stats the new, cool way, set `LOG_DB_PATH` (a file path, e.g.
+    `/var/local/tps/data/tps.db`)
+  - Note that old MariaDB data is not migrated or preserved in any way. It
+    wasn't very useful, it turns out.
+- **Front proxy routing**: for `/.tps/report` and `/.tps/beacon` to work, your
+  front proxy (Caddy/nginx) must route `/.tps/` to TPS along with the protected
+  paths.
+- **Custom templates**: add the beacon snippet from the embedded challenge
+  template, or the `challenge_rendered` signal (and the report's "rendered"
+  column) will always read zero for your pages.
 
 ## v1.1.1
 
