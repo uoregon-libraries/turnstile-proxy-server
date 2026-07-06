@@ -217,18 +217,16 @@ One deployment note for DSpace specifically: the Angular frontend's
 server-side rendering makes its own calls to the REST backend. Route that
 server-to-server traffic directly to the backend, not through TPS.
 
-## Analytics & live monitoring
+## Analytics
 
 TPS exposes its own endpoints under a reserved, collision-resistant path prefix,
 `/.tps/` (the leading dot keeps it clear of real application routes, the same way
 Anubis uses `/.within.website/`). Anything under `/.tps/` is always handled by
 TPS itself and is never proxied to a backend or challenged.
 
-There are three endpoints:
+There are two endpoints:
 
 - **`/.tps/report`** — JSON challenge statistics.
-- **`/.tps/watch`** and **`/.tps/watch.html`** — a live event stream and a small
-  browser viewer.
 - **`/.tps/beacon`** — used internally by the challenge page (see "Smart vs. dumb
   bots" below). You don't call this yourself.
 
@@ -236,26 +234,26 @@ There are three endpoints:
 
 TPS is meant to sit on a private network behind your real proxy, **not** be
 generally reachable from the web. For any of these endpoints to work at all, your
-front proxy has to route `/.tps/` to TPS. But `report` and `watch` reveal traffic
-data, so they must not be open to the world. Two rules:
+front proxy has to route `/.tps/` to TPS. But `report` reveals traffic data, so
+it must not be open to the world. Two rules:
 
-1. **`report` and `watch` are opt-in and authenticated.** They are disabled
-   entirely (they return `404`) unless you set `ADMIN_SECRET`. When set, every
-   request must present the secret either as `Authorization: Bearer <secret>` or
-   as a `?key=<secret>` query parameter (the query form is there because the
-   browser `EventSource` API used by the live viewer can't send headers).
+1. **`report` is opt-in and authenticated.** It is disabled entirely (it returns
+   `404`) unless you set `ADMIN_SECRET`. When set, every request must present
+   the secret either as `Authorization: Bearer <secret>` or as a
+   `?key=<secret>` query parameter (the query form makes a plain browser
+   bookmark work).
 2. **`beacon` is always public.** It only records that a challenged client ran
    JavaScript and carries no data back to the caller, so it's safe to expose. It
    must be reachable by ordinary (challenged) visitors for the smart/dumb signal
    to work.
 
-On top of the secret, lock the analytics endpoints down at your front proxy.
-Good options, roughly in order of preference:
+On top of the secret, lock the report endpoint down at your front proxy. Good
+options, roughly in order of preference:
 
-- Don't expose `report`/`watch` publicly at all — reach them over an SSH tunnel
+- Don't expose `report` publicly at all — reach it over an SSH tunnel
   or from inside the private network (e.g. `curl -H 'Authorization: Bearer …'
   http://tps:8080/.tps/report?period=7d`).
-- Or expose them on an internal-only hostname / port, or behind an IP allowlist
+- Or expose it on an internal-only hostname / port, or behind an IP allowlist
   and/or HTTP basic auth in Caddy/nginx, *in addition to* `ADMIN_SECRET`.
 
 A minimal Caddy sketch that keeps the beacon public but gates the rest by client
@@ -267,7 +265,7 @@ handle /.tps/beacon {
     reverse_proxy tps:8080
 }
 
-# Restricted: only the office network can even reach report/watch
+# Restricted: only the office network can even reach report
 # (ADMIN_SECRET is still required on top of this).
 @admin path /.tps/*
 handle @admin {
@@ -324,27 +322,6 @@ the beacon, so `challenged` minus `rendered` is your "dumb bot" floor.
 If you use [custom challenge templates](#customize-ui), keep the
 `navigator.sendBeacon('/.tps/beacon')` snippet from the core template, or you
 lose this signal for those paths.
-
-### `/.tps/watch` (live events)
-
-`GET /.tps/watch.html?key=<secret>` opens a live, auto-scrolling view of every
-decision as it happens. Each client is shown under a stable, readable name like
-"Purple Armadillo" (derived from its token id, or its masked IP + User-Agent when
-it has no token yet) instead of an opaque id, so you can follow one visitor
-across requests at a glance.
-
-`/.tps/watch` itself is the raw [Server-Sent Events][sse] stream behind the
-viewer, if you'd rather consume it with your own tooling:
-
-```bash
-curl -N -H 'Authorization: Bearer <secret>' http://tps:8080/.tps/watch
-```
-
-The live view is best-effort: a slow consumer has events dropped rather than
-slowing the request path, and the stream is real-time only (it doesn't replay
-history — use `report` or query the SQLite log for that).
-
-[sse]: <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events>
 
 ## Usage
 

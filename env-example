@@ -97,17 +97,16 @@ TOKEN_IP_SWITCH_COST=10
 # fetch()-style headers -- see "Single-Page Apps" in the README.
 CHALLENGE_MODE=all
 
-# Shared secret that unlocks TPS's analytics endpoints under the reserved
-# /.tps/ path: /.tps/report (JSON challenge stats) and /.tps/watch[.html]
-# (live event stream + viewer). When unset, those endpoints are DISABLED and
-# return 404 -- they are strictly opt-in, because TPS is meant to sit on a
-# private network, not face the web. When set, callers must present it as a
-# bearer token ("Authorization: Bearer <secret>") or a "key" query parameter,
-# e.g. /.tps/watch.html?key=<secret>.
+# Shared secret that unlocks TPS's analytics endpoint under the reserved
+# /.tps/ path: /.tps/report (JSON challenge stats). When unset, the endpoint is
+# DISABLED and returns 404 -- it is strictly opt-in, because TPS is meant to
+# sit on a private network, not face the web. When set, callers must present it
+# as a bearer token ("Authorization: Bearer <secret>") or a "key" query
+# parameter, e.g. /.tps/report?key=<secret>.
 #
 # The /.tps/beacon endpoint (used by the challenge page to report that the
 # client ran JavaScript -- the "smart vs dumb bot" signal) is always public and
 # is unaffected by this secret. For any of /.tps/ to work, your front proxy must
-# route /.tps/ to TPS. See "Analytics & live monitoring" in the README for how
-# to expose the report/watch endpoints safely.
+# route /.tps/ to TPS. See "Analytics" in the README for how to expose the
+# report endpoint safely.
 ADMIN_SECRET="choose-another-long-random-value"

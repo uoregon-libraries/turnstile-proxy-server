@@ -110,7 +110,6 @@ type Server struct {
 	requestCache   *cache.Cache
 	proxyTargets   []parsedProxyRoute
 	templates      map[string]string
-	hub            *eventHub
 }
 
 // NewServer creates and configures a new Server instance. You must manually
@@ -143,7 +142,6 @@ func NewServer(router *gin.Engine, store db.Store) *Server {
 		budgetCache:   cache.New(time.Hour, 10*time.Minute),
 		requestCache:  requestCache,
 		templates:     make(map[string]string),
-		hub:           newEventHub(),
 	}
 	s.r.Any("/*proxyPath", s.handleProxy)
 
@@ -240,21 +238,12 @@ func (s *Server) SetChallengeNavigationOnly(navOnly bool) *Server {
 	return s
 }
 
-// SetAdminSecret sets the shared secret that gates the analytics endpoints
-// (/.tps/report and /.tps/watch). An empty secret disables those endpoints
-// entirely (they 404), so they are opt-in. The public /.tps/beacon endpoint is
-// unaffected.
+// SetAdminSecret sets the shared secret that gates /.tps/report. An empty
+// secret disables the endpoint entirely (it 404s), so it is opt-in. The public
+// /.tps/beacon endpoint is unaffected.
 func (s *Server) SetAdminSecret(secret string) *Server {
 	s.adminSecret = secret
 	return s
-}
-
-// recordEvent persists a decision event and fans it out to any connected
-// /.tps/watch subscribers. Every decision point routes through here so the live
-// view and the SQLite log stay in step.
-func (s *Server) recordEvent(e db.Event) {
-	s.db.LogEvent(e)
-	s.hub.broadcast(e)
 }
 
 // SetRequestBudget controls how many requests a single token is good for
@@ -588,7 +577,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 			"URL", c.Request.URL.String())
 		var e = s.baseEvent(c)
 		e.Outcome = db.OutcomeNavSkip
-		s.recordEvent(e)
+		s.db.LogEvent(e)
 		s.replayRequest(c, c.Request)
 		return
 	}
@@ -633,7 +622,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 			e.Reason = db.ReasonValidToken
 			e.JTI = jtiOf(token)
 			e.IPSwitch = surcharged
-			s.recordEvent(e)
+			s.db.LogEvent(e)
 			s.replayRequest(c, c.Request)
 			return
 		}
@@ -671,13 +660,13 @@ func (s *Server) handleProxy(c *gin.Context) {
 			var e = s.baseEvent(c)
 			e.Outcome = db.OutcomeVerifyOK
 			e.Reason = db.ReasonVerifiedReplay
-			s.recordEvent(e)
+			s.db.LogEvent(e)
 			s.issueTokenAndReplay(c, requestID)
 		} else {
 			s.logger.Warn("Turnstile verification failed", "error-codes", verifyResp.ErrorCodes)
 			var e = s.baseEvent(c)
 			e.Outcome = db.OutcomeVerifyFail
-			s.recordEvent(e)
+			s.db.LogEvent(e)
 			c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "failed"), nil)
 		}
 		return
@@ -704,7 +693,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 	e.Outcome = db.OutcomeChallenged
 	e.Reason = challengeReason
 	e.JTI = challengeJTI
-	s.recordEvent(e)
+	s.db.LogEvent(e)
 	c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "challenge"), gin.H{
 		"SiteKey":    s.siteKey,
 		"RequestID":  newRequestID,

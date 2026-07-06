@@ -130,9 +130,8 @@ func help() {
 	fmt.Println("                 Sec-Fetch-Mode header) and proxies everything else through with no token needed.")
 	fmt.Println("                 Use \"navigation\" for single-page apps whose background API calls can't render a")
 	fmt.Println("                 challenge page; note it leaves the API endpoints open to bots. See the README.")
-	fmt.Println("- ADMIN_SECRET (optional): shared secret unlocking the analytics endpoints under /.tps/:")
-	fmt.Println("                 /.tps/report (JSON stats) and /.tps/watch[.html] (live event stream + viewer).")
-	fmt.Println("                 Unset disables them (404). When set, present it as a bearer token or ?key=. The")
+	fmt.Println("- ADMIN_SECRET (optional): shared secret unlocking the /.tps/report endpoint (JSON stats).")
+	fmt.Println("                 Unset disables it (404). When set, present it as a bearer token or ?key=. The")
 	fmt.Println("                 public /.tps/beacon (JS-execution signal) is unaffected. Route /.tps/ to TPS in")
 	fmt.Println("                 your front proxy; see the README for safe exposure.")
 }
