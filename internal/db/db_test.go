@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -130,6 +131,117 @@ func TestPrune(t *testing.T) {
 	}
 	if outcome != OutcomeProxied {
 		t.Errorf("survivor outcome = %q, want %q", outcome, OutcomeProxied)
+	}
+}
+
+// TestPruneReclaimsSpace confirms that on a fresh database (created in
+// incremental auto_vacuum mode), prune's incremental vacuum leaves no pages on
+// the freelist — freed space goes back to the OS rather than pooling in the
+// file.
+func TestPruneReclaimsSpace(t *testing.T) {
+	var s = newTestStore(t, 0)
+
+	var mode int
+	if err := s.db.QueryRow("PRAGMA auto_vacuum;").Scan(&mode); err != nil || mode != 2 {
+		t.Fatalf("auto_vacuum = %d (err %v), want 2 (incremental) on a fresh database", mode, err)
+	}
+
+	// Enough bulky rows to spread across many pages, so deleting them
+	// actually frees some.
+	var batch = make([]Event, 0, 2000)
+	var filler = string(make([]byte, 500))
+	for i := 0; i < 2000; i++ {
+		batch = append(batch, Event{
+			Timestamp: time.Now().Add(-48 * time.Hour),
+			Outcome:   OutcomeChallenged,
+			UserAgent: filler,
+		})
+	}
+	s.flush(batch)
+
+	var pagesBefore int
+	if err := s.db.QueryRow("PRAGMA page_count;").Scan(&pagesBefore); err != nil {
+		t.Fatalf("page_count: %v", err)
+	}
+
+	s.prune(24 * time.Hour)
+
+	var freelist, pagesAfter int
+	if err := s.db.QueryRow("PRAGMA freelist_count;").Scan(&freelist); err != nil {
+		t.Fatalf("freelist_count: %v", err)
+	}
+	if freelist != 0 {
+		t.Errorf("freelist_count after prune = %d, want 0 (incremental vacuum should drain it)", freelist)
+	}
+	if err := s.db.QueryRow("PRAGMA page_count;").Scan(&pagesAfter); err != nil {
+		t.Fatalf("page_count: %v", err)
+	}
+	if pagesAfter >= pagesBefore {
+		t.Errorf("page_count after prune = %d, want fewer than %d", pagesAfter, pagesBefore)
+	}
+}
+
+// TestVacuum exercises the manual rebuild against a database in legacy (no
+// auto_vacuum) mode — the state a pre-2.x event log is in — and confirms it
+// both shrinks the file and switches on incremental auto_vacuum.
+func TestVacuum(t *testing.T) {
+	var path = filepath.Join(t.TempDir(), "events.db")
+
+	// Build the store on a legacy-mode file: creating the schema on a
+	// connection with auto_vacuum=NONE pins the database to that mode.
+	var raw, err = sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err = raw.Exec("CREATE TABLE placeholder (x);"); err != nil {
+		t.Fatalf("pin legacy mode: %v", err)
+	}
+	raw.Close()
+
+	var store Store
+	if store, err = NewStore(path, 0, testLogger()); err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	var s = store.(*sqliteStore)
+	var batch = make([]Event, 0, 2000)
+	var filler = string(make([]byte, 500))
+	for i := 0; i < 2000; i++ {
+		batch = append(batch, Event{Timestamp: time.Now().Add(-48 * time.Hour), Outcome: OutcomeChallenged, UserAgent: filler})
+	}
+	s.flush(batch)
+	s.prune(24 * time.Hour) // legacy mode: deletes rows, cannot shrink the file
+	store.Close()
+
+	before, after, err := Vacuum(path)
+	if err != nil {
+		t.Fatalf("Vacuum: %v", err)
+	}
+	if after >= before {
+		t.Errorf("Vacuum: size went from %d to %d, want smaller", before, after)
+	}
+
+	// The rebuild must leave the database in incremental mode so future
+	// prunes shrink it without another manual vacuum.
+	var db2, err2 = sql.Open("sqlite", path)
+	if err2 != nil {
+		t.Fatalf("reopen: %v", err2)
+	}
+	defer db2.Close()
+	var mode int
+	if err = db2.QueryRow("PRAGMA auto_vacuum;").Scan(&mode); err != nil {
+		t.Fatalf("auto_vacuum: %v", err)
+	}
+	if mode != 2 {
+		t.Errorf("auto_vacuum after Vacuum = %d, want 2 (incremental)", mode)
+	}
+}
+
+// TestVacuumMissingFile confirms a bad path is an error rather than silently
+// creating and "vacuuming" a brand-new empty database.
+func TestVacuumMissingFile(t *testing.T) {
+	var _, _, err = Vacuum(filepath.Join(t.TempDir(), "nope.db"))
+	if err == nil {
+		t.Fatal("Vacuum on a missing file succeeded, want error")
 	}
 }
 

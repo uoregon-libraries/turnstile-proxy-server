@@ -62,6 +62,8 @@ func main() {
 	switch flag.Arg(0) {
 	case "serve":
 		serve()
+	case "vacuum":
+		vacuum()
 	case "help":
 		help()
 	default:
@@ -87,10 +89,18 @@ func parseLogLevel(name string) (slog.Level, bool) {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [-env-file=path] [serve|help]")
+	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [-env-file=path] [serve|vacuum|help]")
 }
 
 func help() {
+	fmt.Println("Subcommands:")
+	fmt.Println("- serve: run the proxy server")
+	fmt.Println("- vacuum: compact the event log database at LOG_DB_PATH, returning space freed by")
+	fmt.Println("                 pruning to the OS, and enable incremental auto-vacuum so future prunes")
+	fmt.Println("                 shrink the file on their own. Safe while a TPS instance is running (requests")
+	fmt.Println("                 are never delayed), though some analytics events may be dropped during the")
+	fmt.Println("                 rebuild. Needs temporary disk space up to the size of the database.")
+	fmt.Println("")
 	fmt.Println("Flags:")
 	fmt.Println(`- -log-level (optional): log verbosity, one of "debug", "info", "warn", or "error".`)
 	fmt.Println(`                 Defaults to "info".`)
@@ -134,6 +144,30 @@ func help() {
 	fmt.Println("                 Unset disables it (404). When set, present it as a bearer token or ?key=. The")
 	fmt.Println("                 public /.tps/beacon (JS-execution signal) is unaffected. Route /.tps/ to TPS in")
 	fmt.Println("                 your front proxy; see the README for safe exposure.")
+}
+
+// vacuum compacts the event log database and flips it into incremental
+// auto-vacuum mode. It only needs LOG_DB_PATH, so it deliberately skips the
+// full getenv() validation — running it on a box without the serve config
+// should work.
+func vacuum() {
+	applyEnvFile()
+
+	var path = os.Getenv("LOG_DB_PATH")
+	if path == "" {
+		logger.Error("LOG_DB_PATH is not set; there is no event log database to vacuum")
+		os.Exit(1)
+	}
+
+	logger.Info("Vacuuming event log database; this can take a while on a large file", "path", path)
+	var before, after, err = db.Vacuum(path)
+	if err != nil {
+		logger.Error("Vacuum failed", "path", path, "error", err)
+		os.Exit(1)
+	}
+	logger.Info("Vacuum complete", "path", path,
+		"size_before", fmt.Sprintf("%.1fMB", float64(before)/(1<<20)),
+		"size_after", fmt.Sprintf("%.1fMB", float64(after)/(1<<20)))
 }
 
 func serve() {

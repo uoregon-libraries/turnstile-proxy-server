@@ -28,7 +28,16 @@ To sum up: **yes**, you read that right. *We finally have a TPS report.*
   finally answerable. Writes are queued and batched in the background: the
   request path never blocks or slows down the proxying behavior.
 - **`LOG_RETENTION`** (default `720h`, `0` = keep forever) prunes old raw
-  events hourly, keeping the database small.
+  events at startup and hourly thereafter, keeping the database small. New
+  databases are created with incremental auto-vacuum, so pruning returns the
+  freed disk space to the OS instead of leaving the file at its high-water
+  mark.
+- **`tps vacuum` subcommand** compacts the event log database at `LOG_DB_PATH`
+  and switches it to incremental auto-vacuum — run it once on a database file
+  created by an earlier build to shed the space its pruned events still occupy
+  (SQLite never shrinks a file on `DELETE` alone). Safe to run alongside a live
+  TPS: requests are never delayed, though a long rebuild may drop some
+  analytics events.
 - **Analytics endpoints under the reserved `/.tps/` path.** A
   collision-resistant prefix (leading dot, à la Anubis's `/.within.website/`)
   that TPS always handles itself and never proxies:

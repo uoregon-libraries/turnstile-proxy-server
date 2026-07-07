@@ -4,7 +4,9 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -75,7 +77,21 @@ const (
 	flushInterval = 200 * time.Millisecond
 	// pruneInterval is how often expired events are deleted.
 	pruneInterval = time.Hour
+	// vacuumChunkPages is how many free pages one incremental_vacuum call
+	// returns to the OS. Each call is its own short write transaction, so the
+	// chunk size bounds how long the vacuum holds the write lock away from the
+	// event writer.
+	vacuumChunkPages = 1000
 )
+
+// dsn builds the SQLite connection string for the database at path. WAL + a
+// busy timeout keep the single writer happy alongside ad-hoc readers (e.g. the
+// sqlite3 CLI) running analytics queries. auto_vacuum(incremental) only takes
+// effect on databases created fresh (or rebuilt by [Vacuum]); on an existing
+// database without it, the pragma is a harmless no-op.
+func dsn(path string) string {
+	return path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=auto_vacuum(incremental)"
+}
 
 type sqliteStore struct {
 	db      *sql.DB
@@ -93,10 +109,7 @@ type sqliteStore struct {
 // only to raw events: the hourly rollups that feed [Store.Report] are tiny and
 // are kept forever, so reports remain available long past the raw-log window.
 func NewStore(path string, retention time.Duration, logger *slog.Logger) (Store, error) {
-	// WAL + a busy timeout keep the single writer happy alongside ad-hoc
-	// readers (e.g. the sqlite3 CLI) running analytics queries.
-	var dsn = path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
-	var database, err = sql.Open("sqlite", dsn)
+	var database, err = sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +127,15 @@ func NewStore(path string, retention time.Duration, logger *slog.Logger) (Store,
 	if err = store.migrate(); err != nil {
 		database.Close()
 		return nil, err
+	}
+
+	// Databases created before incremental auto-vacuum reuse the space freed
+	// by pruning but never return it to the OS, so the file stays at its
+	// high-water mark. Only a full rebuild can change the mode; point the
+	// operator at the subcommand that does it.
+	var autoVacuum int
+	if err = database.QueryRow("PRAGMA auto_vacuum;").Scan(&autoVacuum); err == nil && autoVacuum != 2 {
+		logger.Info("event log database predates incremental auto-vacuum; disk space freed by pruning is reused but never returned to the OS. Run 'tps vacuum' once to compact the file and enable it")
 	}
 
 	store.wg.Add(1)
@@ -314,6 +336,11 @@ func (s *sqliteStore) flush(batch []Event) {
 func (s *sqliteStore) pruneLoop(retention time.Duration) {
 	defer s.wg.Done()
 
+	// Prune once right away — we're already off the startup path, and a
+	// service restarted more often than pruneInterval would otherwise never
+	// prune at all.
+	s.prune(retention)
+
 	var ticker = time.NewTicker(pruneInterval)
 	defer ticker.Stop()
 
@@ -337,12 +364,78 @@ func (s *sqliteStore) prune(retention time.Duration) {
 	if n, _ := res.RowsAffected(); n > 0 {
 		s.logger.Info("Pruned old events", "deleted", n, "retention", retention.String())
 	}
+	s.incrementalVacuum()
+}
+
+// incrementalVacuum returns freed pages to the OS after a prune, in chunks
+// small enough that the event writer is never locked out for long. It is a
+// silent no-op when the database is not in incremental auto_vacuum mode (a
+// database from before that mode existed; see the hint logged by [NewStore]).
+func (s *sqliteStore) incrementalVacuum() {
+	var freed int
+	for {
+		var before, after int
+		if err := s.db.QueryRow("PRAGMA freelist_count;").Scan(&before); err != nil || before == 0 {
+			break
+		}
+		// Pragmas don't accept bound parameters, hence the Sprintf.
+		if _, err := s.db.Exec(fmt.Sprintf("PRAGMA incremental_vacuum(%d);", vacuumChunkPages)); err != nil {
+			s.logger.Error("Could not run incremental vacuum", "error", err)
+			break
+		}
+		if err := s.db.QueryRow("PRAGMA freelist_count;").Scan(&after); err != nil || after >= before {
+			// No progress: auto_vacuum is off, or the freelist is drained.
+			break
+		}
+		freed += before - after
+	}
+	if freed > 0 {
+		s.logger.Info("Reclaimed free space from event log database", "pages", freed)
+	}
 }
 
 func (s *sqliteStore) Close() error {
 	close(s.done)
 	s.wg.Wait()
 	return s.db.Close()
+}
+
+// Vacuum rebuilds the database file at path with SQLite's VACUUM, returning
+// the file's size in bytes before and after. The rebuild also switches the
+// database into incremental auto_vacuum mode, so from then on the hourly prune
+// returns freed space to the OS on its own.
+//
+// It is safe to run against a database a live TPS instance has open: request
+// handling never waits on the database, so the worst case is the server's
+// background event writer timing out and dropping some batches while the
+// rebuild holds the write lock. VACUUM needs temporary disk space up to the
+// size of the database file.
+func Vacuum(path string) (before, after int64, err error) {
+	// Opening a SQLite database creates it, so stat first: a typo'd path
+	// should be an error, not a successful vacuum of a fresh empty file.
+	var fi os.FileInfo
+	if fi, err = os.Stat(path); err != nil {
+		return 0, 0, err
+	}
+	before = fi.Size()
+
+	var database *sql.DB
+	if database, err = sql.Open("sqlite", dsn(path)); err != nil {
+		return before, 0, err
+	}
+	defer database.Close()
+
+	if _, err = database.Exec("VACUUM;"); err != nil {
+		return before, 0, err
+	}
+	// Fold the WAL back into the main file so the on-disk size we report is
+	// real. Best effort: a concurrent reader can legitimately block it.
+	database.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
+
+	if fi, err = os.Stat(path); err != nil {
+		return before, 0, err
+	}
+	return before, fi.Size(), nil
 }
 
 type noopStore struct{}

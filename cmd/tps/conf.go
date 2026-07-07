@@ -53,14 +53,22 @@ func loadEnvFile(path string) error {
 	return scanner.Err()
 }
 
-func getenv() {
-	if envFile != "" {
-		logger.Info("Overriding environment from file", "file", envFile)
-		if err := loadEnvFile(envFile); err != nil {
-			logger.Error("Cannot read env file", "path", envFile, "error", err)
-			os.Exit(1)
-		}
+// applyEnvFile loads the -env-file into the environment when one was given,
+// exiting on an unreadable file. Call it before reading any config from the
+// environment.
+func applyEnvFile() {
+	if envFile == "" {
+		return
 	}
+	logger.Info("Overriding environment from file", "file", envFile)
+	if err := loadEnvFile(envFile); err != nil {
+		logger.Error("Cannot read env file", "path", envFile, "error", err)
+		os.Exit(1)
+	}
+}
+
+func getenv() {
+	applyEnvFile()
 
 	bindAddr = os.Getenv("BIND_ADDR")
 	turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")

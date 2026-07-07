@@ -36,11 +36,14 @@ up. Once set, you can simply compile (with `make`) and run.
   `sqlite3` CLI, e.g.
   `sqlite3 tps.db 'SELECT outcome, reason, COUNT(*) FROM events GROUP BY 1, 2;'`.
 - `LOG_RETENTION` (optional): how long to keep logged events, as a Go duration
-  string (`"720h"`). Events older than this are pruned hourly. Defaults to
-  `720h` (30 days); `"0"` keeps events forever. Retention applies only to the
-  detailed per-request log: the hourly aggregates that feed `/.tps/report` are
-  tiny and are kept forever, so reports still cover long periods even with a
-  short retention (e.g. `"24h"`).
+  string (`"720h"`). Events older than this are pruned at startup and hourly
+  thereafter. Defaults to `720h` (30 days); `"0"` keeps events forever.
+  Retention applies only to the detailed per-request log: the hourly aggregates
+  that feed `/.tps/report` are tiny and are kept forever, so reports still
+  cover long periods even with a short retention (e.g. `"24h"`). On databases
+  created by TPS 2.x, pruning returns the freed disk space to the OS; a
+  database file created by an earlier version keeps reusing its free space
+  internally but never shrinks, until you run `tps vacuum` once (see Usage).
 - `TEMPLATE_PATH`: If you have custom templates, this is where they'll live.
   See the section below on customizing the UI.
 - `TOKEN_LIFETIME` (optional): how long a solved challenge stays valid, as a
@@ -325,8 +328,17 @@ lose this signal for those paths.
 
 ## Usage
 
-Build via `make`, and run via `./bin/tps [serve|help]`. For local dev work, you
-can pass `-env-file=./env` or something similar in order to load settings.
+Build via `make`, and run via `./bin/tps [serve|vacuum|help]`. For local dev
+work, you can pass `-env-file=./env` or something similar in order to load
+settings.
+
+`tps vacuum` compacts the event log database at `LOG_DB_PATH` (handy when
+there's no `sqlite3` CLI on the box) and enables incremental auto-vacuum on it,
+so future pruning shrinks the file on its own. Run it once on a database file
+carried over from an older TPS to release the space old pruned events still
+occupy. It's safe while TPS is running — requests are never delayed, though a
+long rebuild can make the server drop some analytics events — and it needs
+temporary disk space up to the size of the database file.
 You can technically use this on production systems, but you likely want to use
 podman, k8s, systemd, etc., where your environment is explicitly set up, or
 comes from a file that your TPS user can't read, etc.
