@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.0.0-rc1
+## v2.0.0
 
 This release replaces the external MariaDB request log with an embedded SQLite
 event log that records every decision TPS makes, then builds analytics on top
