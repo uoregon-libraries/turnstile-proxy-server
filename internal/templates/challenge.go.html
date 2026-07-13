@@ -13,6 +13,9 @@
       <div class="cf-turnstile" data-sitekey="{{.SiteKey}}" data-callback="onSuccess"></div>
     </form>
     <script>
+      // Send the "is the client JS-enabled?" beacon
+      try { navigator.sendBeacon('/.tps/beacon'); } catch (e) {}
+
       // Submit the challenge form by id, not document.querySelector('form'):
       // a custom template may embed other forms (e.g. a site search bar) ahead
       // of this one, and querySelector('form') would submit the wrong one.

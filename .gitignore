@@ -1,3 +1,8 @@
 /bin
 /env
 /compose.override.yml
+
+# Local SQLite event-log databases (and WAL siblings)
+*.db
+*.db-wal
+*.db-shm

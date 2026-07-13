@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"turnstile-proxy-server/internal/db"
@@ -172,6 +173,13 @@ func TestClientFingerprint(t *testing.T) {
 	}
 }
 
+// charged calls chargeToken and returns only whether the request was allowed;
+// most budget tests don't care about the surcharge flag.
+func charged(s *Server, token *jwt.Token, c *gin.Context) bool {
+	var allowed, _ = s.chargeToken(token, c)
+	return allowed
+}
+
 // newBudgetServer builds a server with the request budget enabled and all
 // the state needed for chargeToken
 func newBudgetServer(budget, switchCost int) *Server {
@@ -198,7 +206,7 @@ func TestChargeToken(t *testing.T) {
 		s := newBudgetServer(0, 10)
 		token := signAndParse(t, s, claims(""))
 		for i := 0; i < 100; i++ {
-			if !s.chargeToken(token, newTestContext(t, "Mozilla/5.0", "192.0.2.55")) {
+			if !charged(s, token, newTestContext(t, "Mozilla/5.0", "192.0.2.55")) {
 				t.Fatal("request rejected with the budget disabled")
 			}
 		}
@@ -207,7 +215,7 @@ func TestChargeToken(t *testing.T) {
 	t.Run("missing jti is rejected", func(t *testing.T) {
 		s := newBudgetServer(1000, 10)
 		token := signAndParse(t, s, claims(""))
-		if s.chargeToken(token, newTestContext(t, "Mozilla/5.0", "192.0.2.55")) {
+		if charged(s, token, newTestContext(t, "Mozilla/5.0", "192.0.2.55")) {
 			t.Error("token without a jti claim accepted while a budget is enabled")
 		}
 	})
@@ -217,14 +225,14 @@ func TestChargeToken(t *testing.T) {
 		token := signAndParse(t, s, claims("token-a"))
 		c := newTestContext(t, "Mozilla/5.0", "192.0.2.55")
 		for i := 0; i < 5; i++ {
-			if !s.chargeToken(token, c) {
+			if !charged(s, token, c) {
 				t.Fatalf("request %d rejected before the budget was spent", i+1)
 			}
 		}
-		if s.chargeToken(token, c) {
+		if charged(s, token, c) {
 			t.Error("request accepted after the budget was spent")
 		}
-		if s.chargeToken(token, c) {
+		if charged(s, token, c) {
 			t.Error("exhausted token recovered without a new challenge")
 		}
 	})
@@ -235,16 +243,16 @@ func TestChargeToken(t *testing.T) {
 		ipA := newTestContext(t, "Mozilla/5.0", "192.0.2.55")
 		ipB := newTestContext(t, "Mozilla/5.0", "203.0.113.7")
 
-		if !s.chargeToken(token, ipA) { // spent 1
+		if !charged(s, token, ipA) { // spent 1
 			t.Fatal("first request rejected")
 		}
-		if !s.chargeToken(token, ipB) { // switch: spent 4
+		if !charged(s, token, ipB) { // switch: spent 4
 			t.Fatal("request after IP switch rejected with budget remaining")
 		}
-		if !s.chargeToken(token, ipB) { // settled on B: spent 5
+		if !charged(s, token, ipB) { // settled on B: spent 5
 			t.Fatal("request from the new IP charged more than 1 after settling")
 		}
-		if s.chargeToken(token, ipB) {
+		if charged(s, token, ipB) {
 			t.Error("request accepted after switch surcharges spent the budget")
 		}
 	})
@@ -257,11 +265,11 @@ func TestChargeToken(t *testing.T) {
 
 		// A=1, B=3, A=3, B=3 -> spent 10; next request can't be covered
 		for i, c := range []*gin.Context{ipA, ipB, ipA, ipB} {
-			if !s.chargeToken(token, c) {
+			if !charged(s, token, c) {
 				t.Fatalf("flap %d rejected with budget remaining", i+1)
 			}
 		}
-		if s.chargeToken(token, ipA) {
+		if charged(s, token, ipA) {
 			t.Error("request accepted after flapping spent the budget")
 		}
 	})
@@ -270,16 +278,16 @@ func TestChargeToken(t *testing.T) {
 		s := newBudgetServer(5, 3)
 		token := signAndParse(t, s, claims("token-d"))
 
-		if !s.chargeToken(token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:aaaa::1")) {
+		if !charged(s, token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:aaaa::1")) {
 			t.Fatal("first request rejected")
 		}
 		// Same /64 (privacy-extension rotation), so this costs 1 (spent 2),
 		// not the surcharge (spent 4)
-		if !s.chargeToken(token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:bbbb::2")) {
+		if !charged(s, token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:bbbb::2")) {
 			t.Fatal("request within the /64 rejected")
 		}
 		for i := 0; i < 3; i++ {
-			if !s.chargeToken(token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:bbbb::2")) {
+			if !charged(s, token, newTestContext(t, "Mozilla/5.0", "2001:db8:1:2:bbbb::2")) {
 				t.Errorf("request %d rejected: movement within the /64 was surcharged", i+3)
 			}
 		}
@@ -291,10 +299,10 @@ func TestChargeToken(t *testing.T) {
 		solver := newTestContext(t, "Mozilla/5.0", "192.0.2.55")
 		s.budgetCache.Set("token-e", &budgetState{lastIP: s.maskClientIP(solver.ClientIP())}, time.Minute)
 
-		if s.chargeToken(token, newTestContext(t, "Mozilla/5.0", "203.0.113.7")) {
+		if charged(s, token, newTestContext(t, "Mozilla/5.0", "203.0.113.7")) {
 			t.Error("surcharge larger than the budget accepted on the first request after a switch")
 		}
-		if !s.chargeToken(token, solver) {
+		if !charged(s, token, solver) {
 			t.Error("solver's own request rejected")
 		}
 	})
@@ -330,17 +338,104 @@ func TestIsNavigationRequest(t *testing.T) {
 	}
 }
 
+// fakeStore captures logged events in memory so tests can assert on the
+// decisions handleProxy records.
+type fakeStore struct {
+	mu     sync.Mutex
+	events []db.Event
+}
+
+func (f *fakeStore) LogEvent(e db.Event) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, e)
+}
+
+func (f *fakeStore) Close() error { return nil }
+
+func (f *fakeStore) Report(time.Time, time.Time, time.Duration) ([]db.CountBucket, error) {
+	return nil, db.ErrReportingUnavailable
+}
+
+func (f *fakeStore) snapshot() []db.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]db.Event(nil), f.events...)
+}
+
 // newChallengeModeServer builds a full Server proxying to the given backend,
 // with a stub challenge template registered so the challenge page can render
 func newChallengeModeServer(t *testing.T, backendURL string, navOnly bool) *Server {
 	t.Helper()
+	return newChallengeModeServerWithStore(t, backendURL, navOnly, db.NewNoopStore())
+}
+
+func newChallengeModeServerWithStore(t *testing.T, backendURL string, navOnly bool, store db.Store) *Server {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
-	s := NewServer(gin.New(), db.NewNoopStore()).
+	s := NewServer(gin.New(), store).
 		SetJWTSigningKey("test-key").
 		SetProxyTarget(backendURL).
 		SetChallengeNavigationOnly(navOnly)
 	s.render.AddFromString("core/challenge", "challenge page {{.RequestID}}")
 	return s
+}
+
+// TestHandleProxyLogsEvents checks that handleProxy records the expected
+// decision event for the two no-token paths: a challenged navigation and a
+// navigation-mode skip that proxies straight through.
+func TestHandleProxyLogsEvents(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("backend response"))
+	}))
+	defer backend.Close()
+
+	send := func(t *testing.T, s *Server, secFetchMode string) {
+		t.Helper()
+		tps := httptest.NewServer(s.r)
+		defer tps.Close()
+		req, _ := http.NewRequest("GET", tps.URL+"/protected/data", nil)
+		if secFetchMode != "" {
+			req.Header.Set("Sec-Fetch-Mode", secFetchMode)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("sending request: %v", err)
+		}
+		resp.Body.Close()
+	}
+
+	t.Run("tokenless navigation logs a challenged/no_cookie event", func(t *testing.T) {
+		store := &fakeStore{}
+		s := newChallengeModeServerWithStore(t, backend.URL, false, store)
+		send(t, s, "navigate")
+
+		events := store.snapshot()
+		if len(events) != 1 {
+			t.Fatalf("got %d events, want 1: %+v", len(events), events)
+		}
+		if events[0].Outcome != db.OutcomeChallenged || events[0].Reason != db.ReasonNoCookie {
+			t.Errorf("event = {%q, %q}, want {%q, %q}",
+				events[0].Outcome, events[0].Reason, db.OutcomeChallenged, db.ReasonNoCookie)
+		}
+		if events[0].Path != "/protected/data" {
+			t.Errorf("event path = %q, want /protected/data", events[0].Path)
+		}
+	})
+
+	t.Run("navigation-mode skip logs a nav_skip event", func(t *testing.T) {
+		store := &fakeStore{}
+		s := newChallengeModeServerWithStore(t, backend.URL, true, store)
+		send(t, s, "cors")
+
+		events := store.snapshot()
+		if len(events) != 1 {
+			t.Fatalf("got %d events, want 1: %+v", len(events), events)
+		}
+		if events[0].Outcome != db.OutcomeNavSkip {
+			t.Errorf("event outcome = %q, want %q", events[0].Outcome, db.OutcomeNavSkip)
+		}
+	})
 }
 
 func TestChallengeNavigationOnly(t *testing.T) {

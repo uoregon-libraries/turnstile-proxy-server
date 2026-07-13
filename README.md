@@ -29,12 +29,21 @@ up. Once set, you can simply compile (with `make`) and run.
   Like your value for nginx or Caddy's proxy target, the target URL is how TPS
   finds your service so it can proxy to protected content after a turnstile
   challenge is successful.
-- `DATABASE_DSN` (optional): DSN for the MariaDB database, which stores
-  various stats for analysis. e.g.,
-  `user:pass@tcp(host:3306)/dbname?parseTime=true`. If unset, request logging
-  is disabled.
-  - The `parseTime` argument is important for something I no longer recall, but
-    it really is important, so make sure you have that!
+- `LOG_DB_PATH` (optional): filesystem path to an embedded SQLite database
+  where TPS records one decision event per request (challenge served, verified,
+  proxied, navigation-mode skip, etc.) for later analysis. The file is created
+  if it doesn't exist. If unset, event logging is disabled. Query it with the
+  `sqlite3` CLI, e.g.
+  `sqlite3 tps.db 'SELECT outcome, reason, COUNT(*) FROM events GROUP BY 1, 2;'`.
+- `LOG_RETENTION` (optional): how long to keep logged events, as a Go duration
+  string (`"720h"`). Events older than this are pruned at startup and hourly
+  thereafter. Defaults to `720h` (30 days); `"0"` keeps events forever.
+  Retention applies only to the detailed per-request log: the hourly aggregates
+  that feed `/.tps/report` are tiny and are kept forever, so reports still
+  cover long periods even with a short retention (e.g. `"24h"`). On databases
+  created by TPS 2.x, pruning returns the freed disk space to the OS; a
+  database file created by an earlier version keeps reusing its free space
+  internally but never shrinks, until you run `tps vacuum` once (see Usage).
 - `TEMPLATE_PATH`: If you have custom templates, this is where they'll live.
   See the section below on customizing the UI.
 - `TOKEN_LIFETIME` (optional): how long a solved challenge stays valid, as a
@@ -211,10 +220,125 @@ One deployment note for DSpace specifically: the Angular frontend's
 server-side rendering makes its own calls to the REST backend. Route that
 server-to-server traffic directly to the backend, not through TPS.
 
+## Analytics
+
+TPS exposes its own endpoints under a reserved, collision-resistant path prefix,
+`/.tps/` (the leading dot keeps it clear of real application routes, the same way
+Anubis uses `/.within.website/`). Anything under `/.tps/` is always handled by
+TPS itself and is never proxied to a backend or challenged.
+
+There are two endpoints:
+
+- **`/.tps/report`** — JSON challenge statistics.
+- **`/.tps/beacon`** — used internally by the challenge page (see "Smart vs. dumb
+  bots" below). You don't call this yourself.
+
+### Exposing `/.tps/` (read this first)
+
+TPS is meant to sit on a private network behind your real proxy, **not** be
+generally reachable from the web. For any of these endpoints to work at all, your
+front proxy has to route `/.tps/` to TPS. But `report` reveals traffic data, so
+it must not be open to the world. Two rules:
+
+1. **`report` is opt-in and authenticated.** It is disabled entirely (it returns
+   `404`) unless you set `ADMIN_SECRET`. When set, every request must present
+   the secret either as `Authorization: Bearer <secret>` or as a
+   `?key=<secret>` query parameter (the query form makes a plain browser
+   bookmark work).
+2. **`beacon` is always public.** It only records that a challenged client ran
+   JavaScript and carries no data back to the caller, so it's safe to expose. It
+   must be reachable by ordinary (challenged) visitors for the smart/dumb signal
+   to work.
+
+On top of the secret, lock the report endpoint down at your front proxy. Good
+options, roughly in order of preference:
+
+- Don't expose `report` publicly at all — reach it over an SSH tunnel
+  or from inside the private network (e.g. `curl -H 'Authorization: Bearer …'
+  http://tps:8080/.tps/report?period=7d`).
+- Or expose it on an internal-only hostname / port, or behind an IP allowlist
+  and/or HTTP basic auth in Caddy/nginx, *in addition to* `ADMIN_SECRET`.
+
+A minimal Caddy sketch that keeps the beacon public but gates the rest by client
+IP (the `ADMIN_SECRET` is still required as a second factor):
+
+```caddyfile
+# Public: let challenged visitors hit the beacon.
+handle /.tps/beacon {
+    reverse_proxy tps:8080
+}
+
+# Restricted: only the office network can even reach report
+# (ADMIN_SECRET is still required on top of this).
+@admin path /.tps/*
+handle @admin {
+    @notallowed not remote_ip 203.0.113.0/24
+    respond @notallowed 403
+    reverse_proxy tps:8080
+}
+```
+
+### `/.tps/report`
+
+`GET /.tps/report?period=<1d|7d|1m|1y>` returns counts bucketed at a granularity
+that suits the span. `period` defaults to `1d`.
+
+| period | bucket width | rows |
+| ------ | ------------ | ---- |
+| `1d`   | 1 hour       | 24   |
+| `7d`   | 12 hours     | 14   |
+| `1m`   | 1 day        | 30   |
+| `1y`   | 2 weeks      | 26   |
+
+Buckets are aligned to UTC boundaries, and the most recent (partial) bucket is
+included. Each bucket reports four counts:
+
+- `challenged` — challenge pages served (the "raw" number).
+- `rendered` — challenge pages whose JavaScript actually ran (see below). The
+  difference `challenged - rendered` approximates clients that never execute JS.
+- `solved` — Turnstile solutions that verified with Cloudflare.
+- `failed` — Turnstile solutions that were submitted but failed verification.
+
+```json
+{
+  "period": "1d",
+  "bucket": "1h0m0s",
+  "start": "2026-06-23T10:00:00Z",
+  "end": "2026-06-24T10:00:00Z",
+  "buckets": [
+    { "start": "2026-06-23T10:00:00Z", "challenged": 42, "rendered": 9, "solved": 7, "failed": 1 }
+  ]
+}
+```
+
+Reporting needs the event log, so it returns `503` when `LOG_DB_PATH` is unset.
+
+### Smart vs. dumb bots (`rendered` / the beacon)
+
+`solved` and `failed` already tell you about clients that ran the Turnstile
+widget. What they can't tell you is whether a client executes JavaScript *at
+all* — the cheapest way to separate real browsers from header-only scrapers. The
+embedded challenge page pings `/.tps/beacon` as soon as its JavaScript runs, and
+that ping is logged as a `rendered` event. Clients that never run JS never hit
+the beacon, so `challenged` minus `rendered` is your "dumb bot" floor.
+
+If you use [custom challenge templates](#customize-ui), keep the
+`navigator.sendBeacon('/.tps/beacon')` snippet from the core template, or you
+lose this signal for those paths.
+
 ## Usage
 
-Build via `make`, and run via `./bin/tps [serve|help]`. For local dev work, you
-can pass `-env-file=./env` or something similar in order to load settings.
+Build via `make`, and run via `./bin/tps [serve|vacuum|help]`. For local dev
+work, you can pass `-env-file=./env` or something similar in order to load
+settings.
+
+`tps vacuum` compacts the event log database at `LOG_DB_PATH` (handy when
+there's no `sqlite3` CLI on the box) and enables incremental auto-vacuum on it,
+so future pruning shrinks the file on its own. Run it once on a database file
+carried over from an older TPS to release the space old pruned events still
+occupy. It's safe while TPS is running — requests are never delayed, though a
+long rebuild can make the server drop some analytics events — and it needs
+temporary disk space up to the size of the database file.
 You can technically use this on production systems, but you likely want to use
 podman, k8s, systemd, etc., where your environment is explicitly set up, or
 comes from a file that your TPS user can't read, etc.

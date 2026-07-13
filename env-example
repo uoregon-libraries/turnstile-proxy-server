@@ -23,9 +23,18 @@ PROXY_TARGETS="/protected/=http://app:8080,/static-protected/=http://caddy:8081"
 # Single-backend, legacy form. Equivalent to PROXY_TARGETS="/=<url>".
 PROXY_TARGET="http://localhost"
 
-# Where will you record the stats? This is a DSN to a MariaDB database. If
-# unset, request logging is disabled and TPS runs without a database.
-DATABASE_DSN="user:pass@tcp(host:3306)/dbname?parseTime=true"
+# Where will you record the stats? TPS logs one decision event per request
+# (challenge served, verified, proxied, etc.) to an embedded SQLite database at
+# this path; the file is created if it doesn't exist. If unset, event logging
+# is disabled and TPS runs without a database. Query it with the sqlite3 CLI,
+# e.g. `SELECT outcome, reason, COUNT(*) FROM events GROUP BY 1, 2;`.
+LOG_DB_PATH="/var/local/tps/data/tps.db"
+
+# How long to keep logged events, as a Go duration string. Older events are
+# pruned hourly. Defaults to 720h (30 days); "0" keeps events forever. Only the
+# detailed per-request log is pruned; the hourly aggregates behind /.tps/report
+# are kept forever, so a short retention still leaves long-term report data.
+LOG_RETENTION="720h"
 
 # Where are custom templates (if any) found?
 TEMPLATE_PATH="/var/local/tps/templates"
@@ -87,3 +96,17 @@ TOKEN_IP_SWITCH_COST=10
 # The trade-off is that the API endpoints are open to any client that sends
 # fetch()-style headers -- see "Single-Page Apps" in the README.
 CHALLENGE_MODE=all
+
+# Shared secret that unlocks TPS's analytics endpoint under the reserved
+# /.tps/ path: /.tps/report (JSON challenge stats). When unset, the endpoint is
+# DISABLED and returns 404 -- it is strictly opt-in, because TPS is meant to
+# sit on a private network, not face the web. When set, callers must present it
+# as a bearer token ("Authorization: Bearer <secret>") or a "key" query
+# parameter, e.g. /.tps/report?key=<secret>.
+#
+# The /.tps/beacon endpoint (used by the challenge page to report that the
+# client ran JavaScript -- the "smart vs dumb bot" signal) is always public and
+# is unaffected by this secret. For any of /.tps/ to work, your front proxy must
+# route /.tps/ to TPS. See "Analytics" in the README for how to expose the
+# report endpoint safely.
+ADMIN_SECRET="choose-another-long-random-value"

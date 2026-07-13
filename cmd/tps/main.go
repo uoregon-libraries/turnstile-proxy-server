@@ -28,13 +28,15 @@ var turnstileSecretKey string
 var turnstileSiteKey string
 var jwtSigningKey string
 var proxyTargets []proxyRoute
-var databaseDSN string
+var logDBPath string
+var logRetention time.Duration
 var templatePath string
 var tokenLifetime time.Duration
 var tokenBindUserAgent bool
 var tokenRequestBudget int
 var tokenIPSwitchCost int
 var challengeNavigationOnly bool
+var adminSecret string
 
 var logger *slog.Logger
 
@@ -60,6 +62,8 @@ func main() {
 	switch flag.Arg(0) {
 	case "serve":
 		serve()
+	case "vacuum":
+		vacuum()
 	case "help":
 		help()
 	default:
@@ -85,10 +89,18 @@ func parseLogLevel(name string) (slog.Level, bool) {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [-env-file=path] [serve|help]")
+	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [-env-file=path] [serve|vacuum|help]")
 }
 
 func help() {
+	fmt.Println("Subcommands:")
+	fmt.Println("- serve: run the proxy server")
+	fmt.Println("- vacuum: compact the event log database at LOG_DB_PATH, returning space freed by")
+	fmt.Println("                 pruning to the OS, and enable incremental auto-vacuum so future prunes")
+	fmt.Println("                 shrink the file on their own. Safe while a TPS instance is running (requests")
+	fmt.Println("                 are never delayed), though some analytics events may be dropped during the")
+	fmt.Println("                 rebuild. Needs temporary disk space up to the size of the database.")
+	fmt.Println("")
 	fmt.Println("Flags:")
 	fmt.Println(`- -log-level (optional): log verbosity, one of "debug", "info", "warn", or "error".`)
 	fmt.Println(`                 Defaults to "info".`)
@@ -107,8 +119,11 @@ func help() {
 	fmt.Println("                 Longest matching prefix wins. Either PROXY_TARGETS or PROXY_TARGET must be set.")
 	fmt.Println("- PROXY_TARGET: legacy single-target form, equivalent to PROXY_TARGETS=\"/=<url>\". Ignored if")
 	fmt.Println("                 PROXY_TARGETS is set.")
-	fmt.Println("- DATABASE_DSN (optional): DSN for the MariaDB database, e.g., user:pass@tcp(host:3306)/dbname?parseTime=true.")
-	fmt.Println("                            If unset, request logging is disabled.")
+	fmt.Println("- LOG_DB_PATH (optional): filesystem path to the SQLite event-log database, e.g.,")
+	fmt.Println("                 /var/local/tps/tps.db. The file (and its WAL siblings) is created if absent.")
+	fmt.Println("                 If unset, event logging is disabled.")
+	fmt.Println(`- LOG_RETENTION (optional): how long to keep logged events, as a Go duration ("720h").`)
+	fmt.Println(`                 Defaults to "720h" (30 days). "0" keeps events forever (no pruning).`)
 	fmt.Println("- TEMPLATE_PATH (optional): path to external templates, defaults to /var/local/tps/templates")
 	fmt.Println(`- TOKEN_LIFETIME (optional): how long a solved challenge stays valid, as a Go duration ("30m",`)
 	fmt.Println(`                 "2h"). Defaults to "4h". Shorter lifetimes force bots to re-solve more often.`)
@@ -125,20 +140,48 @@ func help() {
 	fmt.Println("                 Sec-Fetch-Mode header) and proxies everything else through with no token needed.")
 	fmt.Println("                 Use \"navigation\" for single-page apps whose background API calls can't render a")
 	fmt.Println("                 challenge page; note it leaves the API endpoints open to bots. See the README.")
+	fmt.Println("- ADMIN_SECRET (optional): shared secret unlocking the /.tps/report endpoint (JSON stats).")
+	fmt.Println("                 Unset disables it (404). When set, present it as a bearer token or ?key=. The")
+	fmt.Println("                 public /.tps/beacon (JS-execution signal) is unaffected. Route /.tps/ to TPS in")
+	fmt.Println("                 your front proxy; see the README for safe exposure.")
+}
+
+// vacuum compacts the event log database and flips it into incremental
+// auto-vacuum mode. It only needs LOG_DB_PATH, so it deliberately skips the
+// full getenv() validation — running it on a box without the serve config
+// should work.
+func vacuum() {
+	applyEnvFile()
+
+	var path = os.Getenv("LOG_DB_PATH")
+	if path == "" {
+		logger.Error("LOG_DB_PATH is not set; there is no event log database to vacuum")
+		os.Exit(1)
+	}
+
+	logger.Info("Vacuuming event log database; this can take a while on a large file", "path", path)
+	var before, after, err = db.Vacuum(path)
+	if err != nil {
+		logger.Error("Vacuum failed", "path", path, "error", err)
+		os.Exit(1)
+	}
+	logger.Info("Vacuum complete", "path", path,
+		"size_before", fmt.Sprintf("%.1fMB", float64(before)/(1<<20)),
+		"size_after", fmt.Sprintf("%.1fMB", float64(after)/(1<<20)))
 }
 
 func serve() {
 	getenv()
 
 	var store db.Store
-	if databaseDSN == "" {
-		logger.Info("DATABASE_DSN is not set; request logging is disabled")
+	if logDBPath == "" {
+		logger.Info("LOG_DB_PATH is not set; event logging is disabled")
 		store = db.NewNoopStore()
 	} else {
 		var err error
-		store, err = db.NewStore(databaseDSN, logger)
+		store, err = db.NewStore(logDBPath, logRetention, logger)
 		if err != nil {
-			logger.Error("Cannot open database", "error", err)
+			logger.Error("Cannot open event log database", "error", err)
 			os.Exit(1)
 		}
 	}
@@ -158,6 +201,7 @@ func serve() {
 		SetClientBinding(tokenBindUserAgent).
 		SetRequestBudget(tokenRequestBudget, tokenIPSwitchCost).
 		SetChallengeNavigationOnly(challengeNavigationOnly).
+		SetAdminSecret(adminSecret).
 		SetLogger(logger.With("log.source", "main.Server"))
 
 	server.LoadCoreTemplates("internal/templates/*.go.html", templates.FS)

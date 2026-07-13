@@ -2,22 +2,6 @@ services:
   app:
     build: ./app
 
-  db:
-    image: docker.io/mariadb:lts
-    environment:
-      MYSQL_DATABASE: tps
-      MYSQL_USER: tps
-      MYSQL_PASSWORD: tps
-      MYSQL_RANDOM_ROOT_PASSWORD: 1
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-    volumes:
-      - db:/var/lib/mysql
-
   # Single TPS instance fronting two backends:
   #   /protected/*         -> the app
   #   /static-protected/*  -> Caddy's internal :8081 listener, which serves
@@ -30,12 +14,12 @@ services:
       GIN_MODE: "release"
       BIND_ADDR: ":8080"
       PROXY_TARGETS: "/protected/=http://app:8080,/static-protected/=http://caddy:8081"
-      DATABASE_DSN: "tps:tps@tcp(db:3306)/tps?parseTime=true"
+      LOG_DB_PATH: "/var/local/tps/data/tps.db"
+    volumes:
+      - tps-data:/var/local/tps/data
     depends_on:
       app:
         condition: service_started
-      db:
-        condition: service_healthy
 
   caddy:
     build: ./caddy
@@ -49,4 +33,4 @@ services:
       - app
 
 volumes:
-  db: {}
+  tps-data: {}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,10 +15,13 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"turnstile-proxy-server/internal/db"
 	"turnstile-proxy-server/internal/requestid"
@@ -100,6 +104,7 @@ type Server struct {
 	requestBudget  int
 	ipSwitchCost   int
 	navigationOnly bool
+	adminSecret    string
 	budgetMutex    sync.Mutex
 	budgetCache    *cache.Cache
 	requestCache   *cache.Cache
@@ -233,6 +238,14 @@ func (s *Server) SetChallengeNavigationOnly(navOnly bool) *Server {
 	return s
 }
 
+// SetAdminSecret sets the shared secret that gates /.tps/report. An empty
+// secret disables the endpoint entirely (it 404s), so it is opt-in. The public
+// /.tps/beacon endpoint is unaffected.
+func (s *Server) SetAdminSecret(secret string) *Server {
+	s.adminSecret = secret
+	return s
+}
+
 // SetRequestBudget controls how many requests a single token is good for
 // before the client must solve another challenge, and the surcharge applied
 // when a request's masked IP differs from the token's previous request. A
@@ -319,23 +332,25 @@ func (s *Server) tokenMatchesClient(token *jwt.Token, c *gin.Context) bool {
 
 // chargeToken debits the token's request budget for the current request: a
 // normal request costs 1, while a request whose masked IP differs from the
-// token's previous request costs ipSwitchCost. It returns false when the
-// budget can't cover the cost, meaning the client must solve a new challenge.
-// Budget state lives in memory; after a restart it is rebuilt on first sight
-// of a token, giving that token a fresh budget. Tokens without a "jti" claim
-// (issued before budgets existed) are rejected so they can't dodge the limit.
-func (s *Server) chargeToken(token *jwt.Token, c *gin.Context) bool {
+// token's previous request costs ipSwitchCost. It returns allowed=false when
+// the budget can't cover the cost, meaning the client must solve a new
+// challenge, and surcharged=true when the request's IP differed from the
+// token's previous one (for analytics). Budget state lives in memory; after a
+// restart it is rebuilt on first sight of a token, giving that token a fresh
+// budget. Tokens without a "jti" claim (issued before budgets existed) are
+// rejected so they can't dodge the limit.
+func (s *Server) chargeToken(token *jwt.Token, c *gin.Context) (allowed, surcharged bool) {
 	if s.requestBudget <= 0 {
-		return true
+		return true, false
 	}
 
 	var claims, ok = token.Claims.(jwt.MapClaims)
 	if !ok {
-		return false
+		return false, false
 	}
 	var jti, _ = claims["jti"].(string)
 	if jti == "" {
-		return false
+		return false, false
 	}
 
 	var ip = s.maskClientIP(c.ClientIP())
@@ -352,16 +367,42 @@ func (s *Server) chargeToken(token *jwt.Token, c *gin.Context) bool {
 	}
 
 	var cost = 1
-	if ip != state.lastIP {
+	var switched = ip != state.lastIP
+	if switched {
 		cost = s.ipSwitchCost
 	}
 	if state.spent+cost > s.requestBudget {
-		return false
+		return false, switched
 	}
 
 	state.spent += cost
 	state.lastIP = ip
-	return true
+	return true, switched
+}
+
+// baseEvent captures the request dimensions common to every logged decision.
+// Callers set Outcome, Reason, and (where applicable) JTI and IPSwitch.
+func (s *Server) baseEvent(c *gin.Context) db.Event {
+	return db.Event{
+		Timestamp: time.Now(),
+		ClientIP:  c.ClientIP(),
+		MaskedIP:  s.maskClientIP(c.ClientIP()),
+		Host:      c.Request.Host,
+		Path:      c.Request.URL.Path,
+		Method:    c.Request.Method,
+		UserAgent: c.Request.UserAgent(),
+	}
+}
+
+// jtiOf returns the token's "jti" claim, or "" if absent. Used to correlate a
+// session's events across requests.
+func jtiOf(token *jwt.Token) string {
+	var claims, ok = token.Claims.(jwt.MapClaims)
+	if !ok {
+		return ""
+	}
+	var jti, _ = claims["jti"].(string)
+	return jti
 }
 
 // LoadCoreTemplates is a general-case helper to load either from local disk
@@ -446,7 +487,33 @@ func (s *Server) Run(addr string) error {
 		"s.proxyTargets", s.proxyTargets,
 		"s.templates", s.templates,
 	)
-	return s.r.Run(addr)
+
+	// Run the HTTP server until a fatal error or a termination signal. On
+	// SIGINT/SIGTERM we shut down gracefully and return nil so the caller's
+	// deferred cleanup (e.g. flushing the event log) runs.
+	var srv = &http.Server{Addr: addr, Handler: s.r}
+
+	var ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var errCh = make(chan error, 1)
+	go func() {
+		var err = srv.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		stop()
+		logger.Info("Shutting down, draining in-flight requests")
+		var shutdownCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	}
 }
 
 func (s *Server) getTemplate(r *http.Request, shortname string) string {
@@ -496,17 +563,30 @@ func isNavigationRequest(r *http.Request) bool {
 }
 
 func (s *Server) handleProxy(c *gin.Context) {
+	// The reserved admin prefix is always handled by TPS itself and is never
+	// proxied or challenged. It is checked before everything else so these
+	// internal endpoints can't be shadowed by a backend path or skipped in
+	// navigation mode.
+	if strings.HasPrefix(c.Request.URL.Path, adminPathPrefix) {
+		s.handleAdmin(c)
+		return
+	}
+
 	if s.navigationOnly && !isNavigationRequest(c.Request) {
 		s.logger.Debug("Non-navigation request in navigation-only mode, proxying without challenge",
 			"URL", c.Request.URL.String())
-		s.db.LogRequest(db.RequestLog{
-			ClientIP:  c.ClientIP(),
-			Timestamp: time.Now(),
-			URL:       c.Request.URL.String(),
-		})
+		var e = s.baseEvent(c)
+		e.Outcome = db.OutcomeNavSkip
+		s.db.LogEvent(e)
 		s.replayRequest(c, c.Request)
 		return
 	}
+
+	// challengeReason records why a challenge is being served, for the event
+	// logged at the challenge-serving point below. It defaults to "no cookie"
+	// and is overridden when a cookie is present but unusable.
+	var challengeReason = db.ReasonNoCookie
+	var challengeJTI string
 
 	s.logger.Debug("handleProxy: checking for JWT")
 	var cookie, err = c.Cookie(cookieName)
@@ -521,20 +601,28 @@ func (s *Server) handleProxy(c *gin.Context) {
 		switch {
 		case parseErr != nil:
 			s.logger.Warn("JWT was present but invalid, presenting challenge", "error", parseErr)
+			challengeReason = db.ReasonInvalidJWT
 		case !s.tokenMatchesClient(token, c):
 			s.logger.Warn("JWT is valid but bound to a different client, presenting challenge",
 				"clientIP", c.ClientIP())
-		case !s.chargeToken(token, c):
-			s.logger.Warn("JWT is valid but its request budget is exhausted, presenting challenge",
-				"clientIP", c.ClientIP())
+			challengeReason = db.ReasonClientMismatch
+			challengeJTI = jtiOf(token)
 		default:
+			var allowed, surcharged = s.chargeToken(token, c)
+			if !allowed {
+				s.logger.Warn("JWT is valid but its request budget is exhausted, presenting challenge",
+					"clientIP", c.ClientIP())
+				challengeReason = db.ReasonBudgetExhausted
+				challengeJTI = jtiOf(token)
+				break
+			}
 			s.logger.Debug("JWT is valid, proxying request", "URL", c.Request.URL.String())
-			s.db.LogRequest(db.RequestLog{
-				ClientIP:      c.ClientIP(),
-				Timestamp:     time.Now(),
-				URL:           c.Request.URL.String(),
-				HadValidToken: true,
-			})
+			var e = s.baseEvent(c)
+			e.Outcome = db.OutcomeProxied
+			e.Reason = db.ReasonValidToken
+			e.JTI = jtiOf(token)
+			e.IPSwitch = surcharged
+			s.db.LogEvent(e)
 			s.replayRequest(c, c.Request)
 			return
 		}
@@ -569,23 +657,16 @@ func (s *Server) handleProxy(c *gin.Context) {
 
 		if verifyResp.Success {
 			s.logger.Debug("Turnstile verification successful")
-			s.db.LogRequest(db.RequestLog{
-				ClientIP:              c.ClientIP(),
-				Timestamp:             time.Now(),
-				URL:                   c.Request.URL.String(),
-				WasPresentedChallenge: true,
-				ChallengeSucceeded:    true,
-			})
+			var e = s.baseEvent(c)
+			e.Outcome = db.OutcomeVerifyOK
+			e.Reason = db.ReasonVerifiedReplay
+			s.db.LogEvent(e)
 			s.issueTokenAndReplay(c, requestID)
 		} else {
 			s.logger.Warn("Turnstile verification failed", "error-codes", verifyResp.ErrorCodes)
-			s.db.LogRequest(db.RequestLog{
-				ClientIP:              c.ClientIP(),
-				Timestamp:             time.Now(),
-				URL:                   c.Request.URL.String(),
-				WasPresentedChallenge: true,
-				ChallengeSucceeded:    false,
-			})
+			var e = s.baseEvent(c)
+			e.Outcome = db.OutcomeVerifyFail
+			s.db.LogEvent(e)
 			c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "failed"), nil)
 		}
 		return
@@ -608,6 +689,11 @@ func (s *Server) handleProxy(c *gin.Context) {
 	}
 	s.requestCache.Set(newRequestID, cachedReq, cache.DefaultExpiration)
 	s.logger.Info("No/invalid JWT, serving challenge", "requestID", newRequestID)
+	var e = s.baseEvent(c)
+	e.Outcome = db.OutcomeChallenged
+	e.Reason = challengeReason
+	e.JTI = challengeJTI
+	s.db.LogEvent(e)
 	c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "challenge"), gin.H{
 		"SiteKey":    s.siteKey,
 		"RequestID":  newRequestID,

@@ -53,21 +53,30 @@ func loadEnvFile(path string) error {
 	return scanner.Err()
 }
 
-func getenv() {
-	if envFile != "" {
-		logger.Info("Overriding environment from file", "file", envFile)
-		if err := loadEnvFile(envFile); err != nil {
-			logger.Error("Cannot read env file", "path", envFile, "error", err)
-			os.Exit(1)
-		}
+// applyEnvFile loads the -env-file into the environment when one was given,
+// exiting on an unreadable file. Call it before reading any config from the
+// environment.
+func applyEnvFile() {
+	if envFile == "" {
+		return
 	}
+	logger.Info("Overriding environment from file", "file", envFile)
+	if err := loadEnvFile(envFile); err != nil {
+		logger.Error("Cannot read env file", "path", envFile, "error", err)
+		os.Exit(1)
+	}
+}
+
+func getenv() {
+	applyEnvFile()
 
 	bindAddr = os.Getenv("BIND_ADDR")
 	turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")
 	turnstileSiteKey = os.Getenv("TURNSTILE_SITE_KEY")
 	jwtSigningKey = os.Getenv("JWT_SIGNING_KEY")
-	databaseDSN = os.Getenv("DATABASE_DSN")
+	logDBPath = os.Getenv("LOG_DB_PATH")
 	templatePath = os.Getenv("TEMPLATE_PATH")
+	adminSecret = os.Getenv("ADMIN_SECRET")
 
 	var errs []string
 	if bindAddr == "" {
@@ -109,6 +118,16 @@ func getenv() {
 			errs = append(errs, fmt.Sprintf("TOKEN_LIFETIME %q must be a positive Go duration such as 30m or 2h", raw))
 		} else {
 			tokenLifetime = d
+		}
+	}
+
+	logRetention = 720 * time.Hour
+	if raw := os.Getenv("LOG_RETENTION"); raw != "" {
+		var d, derr = time.ParseDuration(raw)
+		if derr != nil || d < 0 {
+			errs = append(errs, fmt.Sprintf(`LOG_RETENTION %q must be a non-negative Go duration such as 720h, or 0 to keep events forever`, raw))
+		} else {
+			logRetention = d
 		}
 	}
 
