@@ -80,21 +80,13 @@ TOKEN_BIND_USER_AGENT=true
 TOKEN_REQUEST_BUDGET=1000
 TOKEN_IP_SWITCH_COST=10
 
-# Challenge mode: which requests are challenged when they don't carry a
-# valid token.
+# Challenge mode: which requests are challenged when they don't carry a valid
+# token. This was going to be a way to help with single-page apps since they do
+# their reqeuests in the background, making them impossible to protect at a
+# page level.
 #
-# "all" (the default): every request is challenged. Right for classic
-# multi-page apps.
-#
-# "navigation": only top-level page navigations are challenged. Everything
-# else -- API calls, scripts, images, anything the browser labels with a
-# Sec-Fetch-Mode header other than "navigate" -- is proxied straight through
-# with no token required. Use this for single-page apps (DSpace, etc.):
-# their background REST calls can't render a challenge page, so challenging
-# them strands real users. Users are challenged on page load instead, and a
-# token expiring mid-session just means the next page load re-challenges.
-# The trade-off is that the API endpoints are open to any client that sends
-# fetch()-style headers -- see "Single-Page Apps" in the README.
+# Leave this as "all". TPS is turning out to be the wrong place to try and
+# solve the problems single-page apps create.
 CHALLENGE_MODE=all
 
 # Shared secret that unlocks TPS's analytics endpoint under the reserved

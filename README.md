@@ -107,49 +107,6 @@ handle {
 }
 ```
 
-## Single-Page Apps
-
-The default mode challenges every request, which breaks single-page apps
-(DSpace, anything Angular/React/Vue-based): the requests that fail are the
-app's background REST calls, and a `fetch()` call can't render a challenge
-page. Users just see a broken app, with no challenge they could solve.
-
-`CHALLENGE_MODE=navigation` fixes this by only challenging *top-level page
-navigations* — typing a URL, clicking a link, reloading. Browsers label
-every request with a `Sec-Fetch-Mode` header that page JavaScript can
-neither forge nor suppress: navigations say `navigate`, while the app's API
-calls, scripts, and images say `cors`, `no-cors`, or `same-origin`. In
-navigation mode, TPS proxies every non-navigation request straight through,
-no token required (or charged against the budget — only navigations spend
-it). This also makes the static-asset warning above moot: asset requests
-are non-navigations, so they're free.
-
-The user experience: the first page load is a navigation, so the user is
-challenged there, solves it once, and the app works. If the token expires
-mid-session nothing breaks — the app's background calls don't need a token —
-and the user is simply re-challenged on their next real page load.
-
-Understand what this mode does *not* protect:
-
-- The API and asset endpoints are open to any bot that sends a
-  `Sec-Fetch-Mode` header the way a browser's `fetch()` does — one static
-  header is enough. Dumb scrapers that send no fetch metadata at all are
-  still challenged (a missing header is treated as a navigation), and
-  browser-mimicking crawler swarms faithfully send `navigate` on page
-  fetches, so they're challenged too. But a targeted bot that knows your
-  API's shape can harvest it freely. Use this mode when keeping the
-  *pages* (and the rendering cost behind them) protected matters more than
-  hiding the raw API.
-- Requests from pre-2023 browsers (no `Sec-Fetch-Mode` at all: Safari
-  before 16.4, Firefox before 90) are all treated as navigations. Those
-  browsers still work — they're challenged on page load like anyone else —
-  but if their token expires mid-session, their in-page API calls get
-  challenge HTML until the next reload.
-
-One deployment note for DSpace specifically: the Angular frontend's
-server-side rendering makes its own calls to the REST backend. Route that
-server-to-server traffic directly to the backend, not through TPS.
-
 ## Analytics
 
 TPS exposes its own endpoints under a reserved, collision-resistant path prefix,
@@ -494,3 +451,32 @@ names.
 If you need to change a template, you must restart TPS in a production
 environment. Templates will auto-reload on change in dev, but not in
 production!
+
+## Single-Page Apps
+
+SPAs are a disaster and TPS can't help much.
+
+TPS challenges all requests you send its way, but SPAs do most of their
+requests via background REST calls which *can't render a challenge page*. Users
+just see a broken app, with no challenge they could solve.
+
+You can protect the initial request to an SPA as you would with any other app,
+so long as their REST requests use a different URL than the initial requests.
+But that may not buy you enough protection to matter, depending on the kinds of
+bots you see, and you'll likely have to do a lot of extra configuration
+(outside TPS) to avoid challenging the good bots (particularly difficult in the
+GLAM world where we have lots of necessary harvesting beyond just SEO).
+
+---
+
+We added a configuration to challenge navigation-only requests (based on
+`Sec-Fetch-Mode`), but (a) this is better done in your main reverse-proxy so
+TPS never sees non-navigation requests to begin with, and (b) SPAs. Are. A.
+Disaster. The ones we're trying to protect don't use navigation anywhere. Every
+request is to a REST API. No HTML. This is literally impossible to protect via
+an edge service. TPS is an edge service. Edge services are exactly where you
+want your WAF running.
+
+So for SPAs, you're on your own. You'll have to edit page templates and let
+your inefficient node runners present and validate challenges whatever way you
+see fit. Good luck. I mean that. It's a pain and we're sorry.
