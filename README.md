@@ -16,11 +16,11 @@ you need to set up. Once set, you can simply compile (with `make`) and run.
 
 ## Challenge Tokens
 
-When a client passes a Turnstile challenge, TPS issues a signed JWT in a
-cookie so the client isn't re-challenged on every request. Two sets of knobs
-control how much protection that token gives you against bots that manage to
-solve a challenge once (e.g., via a CAPTCHA-solving farm) and then try to get
-as much mileage out of it as possible.
+When a client passes a Turnstile challenge, TPS issues a signed JWT in a cookie
+so the client isn't re-challenged on every request. Two settings control how
+much protection that token gives you against bots that manage to solve a
+challenge (e.g., via a CAPTCHA-solving farm): `TOKEN_LIFETIME` and
+`TOKEN_REQUEST_BUDGET`.
 
 ### Token lifetime
 
@@ -28,65 +28,45 @@ as much mileage out of it as possible.
 solve another challenge. The default is four hours. Shorter lifetimes force
 bots to re-solve (or re-buy solves) more often; longer lifetimes mean less
 friction for legitimate users. There's no revocation, so a leaked or shared
-token is good until it expires — keep the lifetime short enough that this
-doesn't worry you.
+token is good until it expires. *Keep the lifetime short enough that this
+doesn't worry you.*
 
 ### Request budget
 
-Every token carries a budget (`TOKEN_REQUEST_BUDGET`, default `1000`): each
+Every token carries a "budget" (`TOKEN_REQUEST_BUDGET`, default `1000`): each
 proxied request spends from it, and when it's gone, the client solves a new
-challenge. A normal request costs 1. A request whose client IP differs from
-the token's *previous* request costs `TOKEN_IP_SWITCH_COST` (default `10`)
-instead — switching IPs isn't forbidden, it's just expensive.
+challenge. A normal request costs 1. A request whose client IP differs from the
+token's *previous* request costs `TOKEN_IP_SWITCH_COST` (default `10`) instead,
+making shared tokens across IP-rotating farms exceedingly costly.
 
-This one mechanism handles every client profile differently, and that's the
-point:
+- A human hitting protected endpoints would need to average a request every 14
+  seconds, nonstop, to spend 1000 credits before the four-hour token expires.
+- A mobile user whose phone hops between Wi-Fi and cellular, or flaps between
+  IPv4 and IPv6, pays 10 per hop, but even if every request switches, they'd
+  still have to do a protected request every couple minutes. More likely, but
+  worst-case is still just extra challenges.
+- Bots that switch IPs have a pay for a new Turnstile solve every 100
+  requests, which (hopefully) costs more than it's worth to crawl a site big
+  enough to need this kind of protection.
 
-- A human hitting expensive endpoints (searches, facets) would need to
-  average a request every 14 seconds, nonstop, for a 4-hour token to feel
-  the default budget. They never will.
-- A mobile user whose phone hops between Wi-Fi and cellular, or flaps
-  between IPv4 and IPv6, pays 10 per hop. Annoying in budget terms,
-  invisible in practice — and crucially, they are *not* re-challenged
-  mid-session.
-- A bot rotating IPs per request pays the surcharge on every single request:
-  1000 budget / 10 per request = 100 requests per solved challenge.
-- A sophisticated bot that keeps a separate cookie per IP avoids the
-  surcharge but is still capped at 1000 requests per solve, per IP. Before
-  budgets, that bot had *unlimited* throughput on each solved IP until the
-  token expired.
-
-What counts as "a different IP" is fixed: the exact address for IPv4, and
+What counts as "a different IP"? The exact address for IPv4, and
 the /64 prefix for IPv6 (the typical single-customer delegation, so IPv6
-privacy-extension rotation is never a switch). These aren't configurable —
-loosening them would make rotation within the masked range free, and the
-worst bots rotate inside a single /24 or even a handful of addresses. If
-strictness is causing pain, the budget and switch cost are the knobs to
-reach for, not the masks.
-
-Know the limits of the switch cost: it punishes *rotation*, not *spread*. A
-bot that batches its requests per IP (all of IP-A's requests, then all of
-IP-B's), or that keeps a separate cookie jar per IP, pays the surcharge
-rarely or never. Against those bots the budget cap itself is your only
-lever: each solved challenge buys them `TOKEN_REQUEST_BUDGET` requests, full
-stop. If sophisticated bots are still causing pain, lower the budget — a
-budget of 250 means four times as many solves for the same scrape, and
-humans on expensive endpoints still won't notice.
+privacy-extension rotation is never a switch).
 
 Budget state lives in TPS's memory, so restarting TPS refreshes every
-outstanding token's budget. That's a deliberate trade for simplicity —
-restarts are rare and bots can't trigger them.
+outstanding token's budget. Restarts should be very rare, so in practice this
+won't matter, but if for some reason you restart a lot *and* have bots solving
+challenges, know that they get their credits back.
 
-Set `TOKEN_REQUEST_BUDGET=0` to disable budgets entirely. This also changes
-IP binding from "charged" back to "enforced" — see below.
+You can set `TOKEN_REQUEST_BUDGET=0` to disable budgets entirely. You shouldn't
+do this, but it's an option.
 
 ### Client binding
 
 Tokens are fingerprinted to the client that solved the challenge. A request
 presenting a token whose fingerprint doesn't match is treated as having no
-token at all, and gets a fresh challenge. Without this, a single solved
-challenge produces a bearer token that an entire botnet can share, no matter
-how its members rotate IP addresses.
+token at all, and gets a fresh challenge. This prevents a botnet from sharing a
+single success in cases where you disabled the budget side. But don't do that.
 
 - **User-Agent** (`TOKEN_BIND_USER_AGENT`, default `true`) is always a hard
   binding: cheap to defeat for a bot that copies headers along with the
@@ -102,12 +82,17 @@ how its members rotate IP addresses.
 
 ### Don't protect static assets
 
-The request budget assumes requests are *expensive things humans do
-deliberately* — searches, report generation, faceted browsing. If TPS sits
-in front of pages that also load their CSS, JavaScript, and images through
-TPS, every page view spends a dozen or more requests, and a real human can
-burn 1000 in half an hour of browsing. Configure your front proxy so static
-assets bypass TPS and go straight to the app. With Caddy, for example:
+The request budget assumes requests are *browser navigation only*, and
+typically the expensive navigation, not things that are cheap to cache or
+static text files, etc.
+
+If a site's CSS, JavaScript, and images are run through through TPS, every page
+view spends a dozen or more requests, which isn't great, but worse still is the
+token could expire mid-page-load and the assets then just puke out 403s instead
+of loading.
+
+If you have assets inside your app's protected paths, configure your front
+proxy to *not* proxy them through TPS. With Caddy, for example:
 
 ```
 @protected {
@@ -121,11 +106,6 @@ handle {
     reverse_proxy app:8080
 }
 ```
-
-If you genuinely need to protect static files (e.g., the files themselves
-are what bots are scraping), raise `TOKEN_REQUEST_BUDGET` to account for the
-per-page request multiplier, and remember every asset request passes through
-TPS and the backend it proxies to.
 
 ## Single-Page Apps
 
