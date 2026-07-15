@@ -9,58 +9,8 @@ partial-site Turnstile protection.
 
 ## Setup and Configuration
 
-Look at `env-example` for details on the environment variables you need to set
-up. Once set, you can simply compile (with `make`) and run.
-
-- `GIN_MODE`: Almost always set this to "release". Debug mode isn't useful for
-  anybody but TPS devs.
-- `BIND_ADDR`: What address and port will TPS listen on?
-- `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` are set to whatever keys you
-  get from Cloudflare for your turnstile widget, or use test site/secret keys
-  from the [Turnstile testing][1] documentation.
-- `JWT_SIGNING_KEY` should be a long string that can't be guessed.
-- `PROXY_TARGETS`: comma-separated list of `prefix=url` entries selecting a
-  backend by request path prefix. Longest matching prefix wins. e.g.
-  `"/protected/=http://app:8080,/static-protected/=http://caddy:8081"`. Use
-  `/` as a catch-all prefix if you want a single fallback.
-- `PROXY_TARGET`: the legacy single-target form, equivalent to
-  `PROXY_TARGETS="/=<url>"`. Either `PROXY_TARGETS` or `PROXY_TARGET` must be
-  set; if both are set, `PROXY_TARGETS` wins and `PROXY_TARGET` is ignored.
-  Like your value for nginx or Caddy's proxy target, the target URL is how TPS
-  finds your service so it can proxy to protected content after a turnstile
-  challenge is successful.
-- `LOG_DB_PATH` (optional): filesystem path to an embedded SQLite database
-  where TPS records one decision event per request (challenge served, verified,
-  proxied, navigation-mode skip, etc.) for later analysis. The file is created
-  if it doesn't exist. If unset, event logging is disabled. Query it with the
-  `sqlite3` CLI, e.g.
-  `sqlite3 tps.db 'SELECT outcome, reason, COUNT(*) FROM events GROUP BY 1, 2;'`.
-- `LOG_RETENTION` (optional): how long to keep logged events, as a Go duration
-  string (`"720h"`). Events older than this are pruned at startup and hourly
-  thereafter. Defaults to `720h` (30 days); `"0"` keeps events forever.
-  Retention applies only to the detailed per-request log: the hourly aggregates
-  that feed `/.tps/report` are tiny and are kept forever, so reports still
-  cover long periods even with a short retention (e.g. `"24h"`). On databases
-  created by TPS 2.x, pruning returns the freed disk space to the OS; a
-  database file created by an earlier version keeps reusing its free space
-  internally but never shrinks, until you run `tps vacuum` once (see Usage).
-- `TEMPLATE_PATH`: If you have custom templates, this is where they'll live.
-  See the section below on customizing the UI.
-- `TOKEN_LIFETIME` (optional): how long a solved challenge stays valid, as a
-  Go duration string like `30m` or `2h`. Defaults to `4h`. See "Challenge
-  Tokens" below.
-- `TOKEN_BIND_USER_AGENT` (optional): bind tokens to the client's User-Agent
-  header. Defaults to `true`. See "Challenge Tokens" below.
-- `TOKEN_REQUEST_BUDGET` (optional): how many requests a single solved
-  challenge is good for. Defaults to `1000`; `0` disables the budget. See
-  "Challenge Tokens" below.
-- `TOKEN_IP_SWITCH_COST` (optional): how much of the budget a request costs
-  when the client's IP differs from the token's previous request. Defaults
-  to `10`; minimum `1`. See "Challenge Tokens" below.
-- `CHALLENGE_MODE` (optional): `all` (the default) challenges every request
-  that lacks a valid token; `navigation` challenges only top-level page
-  navigations and proxies everything else through untouched. See
-  "Single-Page Apps" below.
+Look at [`env-example`](env-example) for details on the environment variables
+you need to set up. Once set, you can simply compile (with `make`) and run.
 
 [1]: <https://developers.cloudflare.com/turnstile/troubleshooting/testing/>
 
