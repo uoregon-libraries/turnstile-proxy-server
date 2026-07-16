@@ -14,6 +14,50 @@ you need to set up. Once set, you can simply compile (with `make`) and run.
 
 [1]: <https://developers.cloudflare.com/turnstile/troubleshooting/testing/>
 
+## Usage
+
+Build via `make`, and run via `./bin/tps serve`. For local dev work, you can
+pass `-env-file=./env` or something similar in order to load settings. You can
+technically use this on production systems, but you likely want to use podman,
+k8s, systemd, etc., where your environment is explicitly set up, or comes from
+a file that your TPS user can't read, etc.
+
+By itself, TPS isn't very useful beyond very basic testing:
+
+- You have to start with a reverse proxy of some kind, like Caddy or nginx. TPS
+  should not be the only proxy, otherwise it has to protect the entire app, and
+  there are better ways to do that. It's also not a full-featured proxy, like
+  Caddy or nginx. Don't rely on TPS alone!
+- Most of the time, your main proxy will dispatch directly to your protected
+  service, and TPS will be involved only for resource-intensive URL patters,
+  such as searches. You'll need to configure the TPS environment with this in
+  mind.
+
+Also take a look at the example app (`example/...`) for details of how this
+could look in a production stack.
+
+**Note**: if you run in debug mode, `internal/templates` must be relative to
+your working directory when you run the binary. In release mode, templates are
+embedded in the binary so that you don't need to copy them around.
+
+### `tps vacuum` for giant events databases
+
+If you're logging request information, and have a busy site, the log database
+will grow way too fast. You'll likely need a very low retention value (e.g.,
+`LOG_RETENTION=24h`) or a lot of disk space. Since aggregations are small and
+done hourly, and the raw data on a busy site can be essentially useless, you
+rarely need a high retention value.
+
+But what if you already have a huge file and change log retention? It won't
+shrink because that's how sqlite3 rolls. Enter `tps vacuum`.
+
+`tps vacuum` compacts the event log database and enables incremental
+auto-vacuum on it, meaning sqlite releases space from deleted data. Run this
+command once and you'll be set!
+
+Note that while running, if the DB got *really* big, you might lose analytics
+events. On a 2-gig file we didn't, but just in case be aware it's possible.
+
 ## Challenge Tokens
 
 When a client passes a Turnstile challenge, TPS issues a signed JWT in a cookie
@@ -212,50 +256,6 @@ the beacon, so `challenged` minus `rendered` is your "dumb bot" floor.
 If you use [custom challenge templates](#customize-ui), keep the
 `navigator.sendBeacon('/.tps/beacon')` snippet from the core template, or you
 lose this signal for those paths.
-
-## Usage
-
-Build via `make`, and run via `./bin/tps serve`. For local dev work, you can
-pass `-env-file=./env` or something similar in order to load settings. You can
-technically use this on production systems, but you likely want to use podman,
-k8s, systemd, etc., where your environment is explicitly set up, or comes from
-a file that your TPS user can't read, etc.
-
-By itself, TPS isn't very useful beyond very basic testing:
-
-- You have to start with a reverse proxy of some kind, like Caddy or nginx. TPS
-  should not be the only proxy, otherwise it has to protect the entire app, and
-  there are better ways to do that. It's also not a full-featured proxy, like
-  Caddy or nginx. Don't rely on TPS alone!
-- Most of the time, your main proxy will dispatch directly to your protected
-  service, and TPS will be involved only for resource-intensive URL patters,
-  such as searches. You'll need to configure the TPS environment with this in
-  mind.
-
-Also take a look at the example app (`example/...`) for details of how this
-could look in a production stack.
-
-**Note**: if you run in debug mode, `internal/templates` must be relative to
-your working directory when you run the binary. In release mode, templates are
-embedded in the binary so that you don't need to copy them around.
-
-### `tps vacuum` for giant events databases
-
-If you're logging request information, and have a busy site, the log database
-will grow way too fast. You'll likely need a very low retention value (e.g.,
-`LOG_RETENTION=24h`) or a lot of disk space. Since aggregations are small and
-done hourly, and the raw data on a busy site can be essentially useless, you
-rarely need a high retention value.
-
-But what if you already have a huge file and change log retention? It won't
-shrink because that's how sqlite3 rolls. Enter `tps vacuum`.
-
-`tps vacuum` compacts the event log database and enables incremental
-auto-vacuum on it, meaning sqlite releases space from deleted data. Run this
-command once and you'll be set!
-
-Note that while running, if the DB got *really* big, you might lose analytics
-events. On a 2-gig file we didn't, but just in case be aware it's possible.
 
 ## Real-world usage
 
