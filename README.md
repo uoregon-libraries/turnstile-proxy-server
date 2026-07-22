@@ -81,17 +81,18 @@ Every token carries a "budget" (`TOKEN_REQUEST_BUDGET`, default `1000`): each
 proxied request spends from it, and when it's gone, the client solves a new
 challenge. A normal request costs 1. A request whose client IP differs from the
 token's *previous* request costs `TOKEN_IP_SWITCH_COST` (default `10`) instead,
-making shared tokens across IP-rotating farms exceedingly costly.
+making shared tokens across IP-rotating bot farms exceedingly costly.
 
 - A human hitting protected endpoints would need to average a request every 14
   seconds, nonstop, to spend 1000 credits before the four-hour token expires.
 - A mobile user whose phone hops between Wi-Fi and cellular, or flaps between
   IPv4 and IPv6, pays 10 per hop, but even if every request switches, they'd
-  still have to do a protected request every couple minutes. More likely, but
-  worst-case is still just extra challenges.
-- Bots that switch IPs have a pay for a new Turnstile solve every 100
-  requests, which (hopefully) costs more than it's worth to crawl a site big
-  enough to need this kind of protection.
+  still have to do a protected request every couple minutes in order to get a
+  re-challenge before the four-hour lifetime naturally expires. More likely,
+  but not *that* likely, and the worst-case is an extra challenge.
+- Bots that switch IPs have a pay for a new Turnstile solve every 100 requests,
+  which (hopefully) costs more than it's worth to crawl a site big enough to
+  need this kind of protection.
 
 What counts as "a different IP"? The exact address for IPv4, and
 the /64 prefix for IPv6 (the typical single-customer delegation, so IPv6
@@ -103,14 +104,15 @@ won't matter, but if for some reason you restart a lot *and* have bots solving
 challenges, know that they get their credits back.
 
 You can set `TOKEN_REQUEST_BUDGET=0` to disable budgets entirely. You shouldn't
-do this, but it's an option.
+do this, as the budget cost in TPS memory is extremely small, and it buys you
+some real value against sophisticated bot. But it's something you *can* do.
 
 ### Client binding
 
 Tokens are fingerprinted to the client that solved the challenge. A request
 presenting a token whose fingerprint doesn't match is treated as having no
 token at all, and gets a fresh challenge. This prevents a botnet from sharing a
-single success in cases where you disabled the budget side. But don't do that.
+single success in cases where you disabled the budget side (but don't do that).
 
 - **User-Agent** (`TOKEN_BIND_USER_AGENT`, default `true`) is always a hard
   binding: cheap to defeat for a bot that copies headers along with the
@@ -132,8 +134,8 @@ static text files, etc.
 
 If a site's CSS, JavaScript, and images are run through through TPS, every page
 view spends a dozen or more requests, which isn't great, but worse still is the
-token could expire mid-page-load and the assets then just puke out 403s instead
-of loading.
+fact that a token could expire mid-page-load and the assets then just puke out
+403s instead of loading.
 
 If you have assets inside your app's protected paths, configure your front
 proxy to *not* proxy them through TPS. With Caddy, for example:
