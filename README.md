@@ -1,11 +1,13 @@
 # Turnstile Proxy Server
 
 Turnstile Proxy Server, or TPS, is a simple service for putting a Cloudflare
-Turnstile page in front of your apps.
+Turnstile page in front of your apps' expensive pages.
 
 The primary use-case is any application where it's infeasible (or just
 inconvenient) to add Turnstile pages directly into the codebase, and you need
-partial-site Turnstile protection.
+partial-site Turnstile protection. It's also very useful in cases where you're
+not sure which URLs need bot protection; changing your Caddy configuration is
+far easier than altering and redeploying your complex app.
 
 ## Setup and Configuration
 
