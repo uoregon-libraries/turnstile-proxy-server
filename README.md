@@ -12,8 +12,6 @@ partial-site Turnstile protection.
 Look at [`env-example`](env-example) for details on the environment variables
 you need to set up. Once set, you can simply compile (with `make`) and run.
 
-[1]: <https://developers.cloudflare.com/turnstile/troubleshooting/testing/>
-
 ## Usage
 
 Build via `make`, and run via `./bin/tps serve`. For local dev work, you can
