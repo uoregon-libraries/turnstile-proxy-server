@@ -256,54 +256,6 @@ how many dumb vs. smart bots you're seeing.
 lose this signal for those paths*. Okay, not the end of the world, but still a
 good thing to keep in mind!
 
-## Real-world usage
-
-### Digital Exhibits
-
-TPS was originally built to solve a single real-world problem: our digital
-exhibit platform was wrecked by bot traffic (50% uptime on a *good* day).
-Misbehaving bots rotated their IP addresses per request, ignored our sitemap,
-ignored robots.txt, etc.
-
-Once we had 20 or so bots each making several requests per minute to our most
-expensive endpoints (search and facets), the stack just couldn't keep up. It
-was hosted on a shared setup with fairly low resources because it wasn't
-expected to see insane levels of traffic.
-
-Building TPS and putting it in front of search and facet requests solved the
-resource problems on day 1. Bots still get to crawl our resources, just not our
-search pages. Our site stays up. Win-win.
-
-Take a look at our [Digital Exhibits Github project][2] for details of how we
-used TPS to basically save a real application.
-
-[2]: <https://github.com/uoregon-libraries/digital-exhibits-spotlight>
-
-### Historic Oregon Newspapers
-
-TPS has also been deployed to protect our largest collection, [Historic Oregon
-Newspapers](https://oregonnews.uoregon.edu/). Uptime was never as big an issue
-as our exhibits platform, but the server's base resource use was very high, and
-for a short time we had to monitor traffic, do reverse-lookups on IP addresses,
-and block entire ISPs at the ASN level. Even with millions of IPs blocked, a
-surge in traffic, or even just an expensive backend operation (loading a batch
-of new newspaper content) occasoinally caused critical services to crash and
-not recover.
-
-We had to be a lot more deliberate here: unlike our exhibits platform, HON
-doesn't have a single chokepoint, and HON's content is so big there's always
-constant "good bot" activity. So we set it up to allow as much harvesting as we
-can afford. Bots that identify themselves, stick to our sitemap, and don't DoS
-us (harvesting agents being run without throttling) can freely harvest whatever
-they like.
-
-With the TPS report, we're now seeing that in any given day there are around
-500,000 to a million requests for protected resources. Fewer than 1% of these
-render JavaScript, and not even 0.1% actually pass the challenge.
-
-Server load is dramatically smaller, we no longer try to chase ASN-level
-blocking, and responsiveness hasn't been this good in years.
-
 ## Docker Image
 
 The docker image is set up for production use, and won't be suitable for dev
