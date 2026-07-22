@@ -251,10 +251,12 @@ Obviously this can be trivially manipulated, but it doesn't really help bots
 any to do that, and even if they do, your site runs fine, you just won't know
 how many dumb vs. smart bots you're seeing.
 
-**Note**: if you use [custom challenge templates](#customize-ui), keep the
+**Note**: if you use [custom challenge templates][wiki-ui], keep the
 `navigator.sendBeacon('/.tps/beacon')` snippet from the core template, *or you
 lose this signal for those paths*. Okay, not the end of the world, but still a
 good thing to keep in mind!
+
+[wiki-ui]: <https://github.com/uoregon-libraries/turnstile-proxy-server/wiki/Customize-UI>
 
 ## Docker Image
 
@@ -263,48 +265,6 @@ since you'll have to rebuild the image every time you change anything.
 
 For dev, and even many production use-cases, you're better off just compiling
 the binary and shipping it.
-
-## Customize UI
-
-The basic challenge and fail pages are very generic and quite honestly ugly. If
-you need to provide a better UI, you can do so with custom templates.
-
-You can choose to set up a `TEMPLATE_PATH` to point to wherever you want to
-store these templates, or just stick with the default:
-`/var/local/tps/templates`.
-
-Within your template path, a subdirectory is expected to be a hostname,
-excluding port, for a site that TPS sits in front of. e.g., you'd start with
-`<template path>/localhost/` when doing development.
-
-For the simplest case, just copy and adapt the `*.go.html` files in
-`internal/templates`. So you'd have `.../localhost/challenge.go.html` for
-the challenge page and `.../localhost/failed.go.html` for the failure
-page. TPS will use your custom templates for any requests the browser makes to
-localhost.
-
-**Note**: _the hostname is the **public** hostname, not the internal hostname. If
-TPS is listening to `front.x.edu` and proxying to `backend.x.edu`, the template
-hostname directory is `front.x.edu`, never `backend.x.edu`._
-
-### Matching URL Paths
-
-Under the hostname directory, you can have subdirectories to match specific
-paths in a URL. TPS will match the most specific path it can when looking for
-custom templates.
-
-So if TPS is protecting everything under `https://front.x/collections/<name>/search`
-you could have `<template path>/front.x/challenge.go.html` as your catch-all
-challenge, and then individually themed challenges under `<template
-path>/front.x/collections/breadmaking/challenge.go.html` for your "Breadmaking"
-collection's custom challenge. You can go as deep as you like for the path
-names.
-
-### Updating Templates
-
-If you need to change a template, you must restart TPS in a production
-environment. Templates will auto-reload on change in dev, but not in
-production!
 
 ## Single-Page Apps
 
