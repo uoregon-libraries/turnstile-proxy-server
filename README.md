@@ -155,54 +155,45 @@ handle {
 
 ## Analytics
 
-TPS exposes its own endpoints under a reserved, collision-resistant path prefix,
-`/.tps/` (the leading dot keeps it clear of real application routes, the same way
-Anubis uses `/.within.website/`). Anything under `/.tps/` is always handled by
-TPS itself and is never proxied to a backend or challenged.
+TPS exposes some basic endpoints for reporting. There are two endpoints:
 
-There are two endpoints:
+- **`/.tps/report`** — The TPS report (no cover sheet needed!)
+- **`/.tps/beacon`** — used internally by the challenge page to differentiate
+  JS-enabled bots from "dumb" bots (see below)
 
-- **`/.tps/report`** — JSON challenge statistics.
-- **`/.tps/beacon`** — used internally by the challenge page (see "Smart vs. dumb
-  bots" below). You don't call this yourself.
+### Exposing `/.tps/`
 
-### Exposing `/.tps/` (read this first)
+TPS is meant to sit on a private network behind your real proxy, and generally
+not be routable directly... *except* for `.tps` endpoints. Your front proxy
+will need to route `/.tps/` to TPS. You don't really want the general public
+sniffing your traffic data, though, even if it is just aggregated bot
+protection information.
 
-TPS is meant to sit on a private network behind your real proxy, **not** be
-generally reachable from the web. For any of these endpoints to work at all, your
-front proxy has to route `/.tps/` to TPS. But `report` reveals traffic data, so
-it must not be open to the world. Two rules:
+So there are two rules:
 
-1. **`report` is opt-in and authenticated.** It is disabled entirely (it returns
-   `404`) unless you set `ADMIN_SECRET`. When set, every request must present
-   the secret either as `Authorization: Bearer <secret>` or as a
-   `?key=<secret>` query parameter (the query form makes a plain browser
-   bookmark work).
-2. **`beacon` is always public.** It only records that a challenged client ran
-   JavaScript and carries no data back to the caller, so it's safe to expose. It
-   must be reachable by ordinary (challenged) visitors for the smart/dumb signal
-   to work.
+1. `/.tps/report`: disabled entirely unless you set `ADMIN_SECRET`. When set,
+   every request must present the secret either as `Authorization: Bearer
+   <secret>` or as a `?key=<secret>` query parameter
+2. `/.tps/beacon` must always be public, otherwise the "smart vs. dumb" bot
+   data can't be collected
 
-On top of the secret, lock the report endpoint down at your front proxy. Good
-options, roughly in order of preference:
+On top of the secret, you can also lock the report endpoint down, e.g., we
+limit ours to VPN-only. You can also just not expose it and use an ssh tunnel
+or curl it from an internal network, e.g.:
 
-- Don't expose `report` publicly at all — reach it over an SSH tunnel
-  or from inside the private network (e.g. `curl -H 'Authorization: Bearer …'
-  http://tps:8080/.tps/report?period=7d`).
-- Or expose it on an internal-only hostname / port, or behind an IP allowlist
-  and/or HTTP basic auth in Caddy/nginx, *in addition to* `ADMIN_SECRET`.
+```
+curl -H 'Authorization: Bearer XYZZY' 'http://tps:8080/.tps/report?period=7d'
+```
 
-A minimal Caddy sketch that keeps the beacon public but gates the rest by client
-IP (the `ADMIN_SECRET` is still required as a second factor):
+For a simple IP-based restriction, you might set up Caddy like this:
 
 ```caddyfile
-# Public: let challenged visitors hit the beacon.
+# Everybody gets a beacon!
 handle /.tps/beacon {
     reverse_proxy tps:8080
 }
 
-# Restricted: only the office network can even reach report
-# (ADMIN_SECRET is still required on top of this).
+# Only our super best friends get the rest of .tps
 @admin path /.tps/*
 handle @admin {
     @notallowed not remote_ip 203.0.113.0/24
@@ -227,8 +218,8 @@ Buckets are aligned to UTC boundaries, and the most recent (partial) bucket is
 included. Each bucket reports four counts:
 
 - `challenged` — challenge pages served (the "raw" number).
-- `rendered` — challenge pages whose JavaScript actually ran (see below). The
-  difference `challenged - rendered` approximates clients that never execute JS.
+- `rendered` — challenge pages whose JavaScript actually ran (the client
+  requested `/.tps/beacon`)
 - `solved` — Turnstile solutions that verified with Cloudflare.
 - `failed` — Turnstile solutions that were submitted but failed verification.
 
@@ -250,14 +241,20 @@ Reporting needs the event log, so it returns `503` when `LOG_DB_PATH` is unset.
 
 `solved` and `failed` already tell you about clients that ran the Turnstile
 widget. What they can't tell you is whether a client executes JavaScript *at
-all* — the cheapest way to separate real browsers from header-only scrapers. The
-embedded challenge page pings `/.tps/beacon` as soon as its JavaScript runs, and
+all*, which is the cheapest way to separate real browsers from the most basic
+(dumb) scrapers. At the moment, that latter group is our biggest trouble.
+
+The challenge page pings `/.tps/beacon` as soon as its JavaScript runs, and
 that ping is logged as a `rendered` event. Clients that never run JS never hit
 the beacon, so `challenged` minus `rendered` is your "dumb bot" floor.
+Obviously this can be trivially manipulated, but it doesn't really help bots
+any to do that, and even if they do, your site runs fine, you just won't know
+how many dumb vs. smart bots you're seeing.
 
-If you use [custom challenge templates](#customize-ui), keep the
-`navigator.sendBeacon('/.tps/beacon')` snippet from the core template, or you
-lose this signal for those paths.
+**Note**: if you use [custom challenge templates](#customize-ui), keep the
+`navigator.sendBeacon('/.tps/beacon')` snippet from the core template, *or you
+lose this signal for those paths*. Okay, not the end of the world, but still a
+good thing to keep in mind!
 
 ## Real-world usage
 
