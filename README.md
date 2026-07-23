@@ -68,82 +68,30 @@ the binary and shipping it.
 
 ## Challenge Tokens
 
-When a client passes a Turnstile challenge, TPS issues a signed JWT in a cookie
-so the client isn't re-challenged on every request. Two settings control how
-much protection that token gives you against bots that manage to solve a
-challenge (e.g., via a CAPTCHA-solving farm): `TOKEN_LIFETIME` and
-`TOKEN_REQUEST_BUDGET`.
+The wiki page, "[How challenge tokens work][wiki-challenge]," has details, but
+briefly: by default each request has a cost and a lifetime. Clients pay per
+request, and when that runs out a client has to re-solve the Turnstile
+challenge. They also have to re-solve when the lifetime expires.
 
-### Token lifetime
+This is to make sophisticated bots at least have to regularly pay (re-solve
+challenges) so they aren't solving a single challenge and using the token
+forever to scrape your site.
 
-`TOKEN_LIFETIME` controls how long a token is honored before the client must
-solve another challenge. The default is four hours. Shorter lifetimes force
-bots to re-solve (or re-buy solves) more often; longer lifetimes mean less
-friction for legitimate users. There's no revocation, so a leaked or shared
-token is good until it expires. *Keep the lifetime short enough that this
-doesn't worry you.*
+In practice this means users will see new challenges regularly, but the vast
+majority won't notice, as the challenges take a couple seconds and usually
+auto-solve.
 
-### Request budget
+[wiki-challenge]: <https://github.com/uoregon-libraries/turnstile-proxy-server/wiki/How-challenge-tokens-work>
 
-Every token carries a "budget" (`TOKEN_REQUEST_BUDGET`, default `1000`): each
-proxied request spends from it, and when it's gone, the client solves a new
-challenge. A normal request costs 1. A request whose client IP differs from the
-token's *previous* request costs `TOKEN_IP_SWITCH_COST` (default `10`) instead,
-making shared tokens across IP-rotating bot farms exceedingly costly.
+## Don't protect static assets!
 
-- A human hitting protected endpoints would need to average a request every 14
-  seconds, nonstop, to spend 1000 credits before the four-hour token expires.
-- A mobile user whose phone hops between Wi-Fi and cellular, or flaps between
-  IPv4 and IPv6, pays 10 per hop, but even if every request switches, they'd
-  still have to do a protected request every couple minutes in order to get a
-  re-challenge before the four-hour lifetime naturally expires. More likely,
-  but not *that* likely, and the worst-case is an extra challenge.
-- Bots that switch IPs have a pay for a new Turnstile solve every 100 requests,
-  which (hopefully) costs more than it's worth to crawl a site big enough to
-  need this kind of protection.
-
-What counts as "a different IP"? The exact address for IPv4, and
-the /64 prefix for IPv6 (the typical single-customer delegation, so IPv6
-privacy-extension rotation is never a switch).
-
-Budget state lives in TPS's memory, so restarting TPS refreshes every
-outstanding token's budget. Restarts should be very rare, so in practice this
-won't matter, but if for some reason you restart a lot *and* have bots solving
-challenges, know that they get their credits back.
-
-You can set `TOKEN_REQUEST_BUDGET=0` to disable budgets entirely. You shouldn't
-do this, as the budget cost in TPS memory is extremely small, and it buys you
-some real value against sophisticated bot. But it's something you *can* do.
-
-### Client binding
-
-Tokens are fingerprinted to the client that solved the challenge. A request
-presenting a token whose fingerprint doesn't match is treated as having no
-token at all, and gets a fresh challenge. This prevents a botnet from sharing a
-single success in cases where you disabled the budget side (but don't do that).
-
-- **User-Agent** (`TOKEN_BIND_USER_AGENT`, default `true`) is always a hard
-  binding: cheap to defeat for a bot that copies headers along with the
-  cookie, but it stops lazy token sharing and costs legitimate users
-  nothing — browsers don't change their UA mid-session.
-- **Client IP** is a hard binding only when the request budget is disabled
-  (`TOKEN_REQUEST_BUDGET=0`). With a budget enabled (the default), an IP
-  change is charged against the budget instead of rejected, which is far
-  kinder to mobile and dual-stack users while still making IP rotation
-  expensive for bots. With the budget disabled, the token only works from
-  the exact IPv4 address (or IPv6 /64) that solved the challenge, and any
-  change forces a re-challenge.
-
-### Don't protect static assets
-
-The request budget assumes requests are *browser navigation only*, and
-typically the expensive navigation, not things that are cheap to cache or
+Protected requests must be for *browser navigation only*, and typically only
+for the expensive pages, not things that are cheap to render, easy to cache,
 static text files, etc.
 
-If a site's CSS, JavaScript, and images are run through through TPS, every page
-view spends a dozen or more requests, which isn't great, but worse still is the
-fact that a token could expire mid-page-load and the assets then just puke out
-403s instead of loading.
+If a site's CSS, JavaScript, and images are run through through TPS, a token
+could expire mid-page-load and the assets then just puke out 403s instead of
+loading. This **will break your site for real users**.
 
 If you have assets inside your app's protected paths, configure your front
 proxy to *not* proxy them through TPS. With Caddy, for example:
