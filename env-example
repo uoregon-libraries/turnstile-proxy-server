@@ -73,10 +73,9 @@ TOKEN_BIND_USER_AGENT=true
 # more solves -- humans on expensive endpoints won't notice until it gets
 # very low.
 #
-# IMPORTANT: do not protect paths that serve static assets (CSS, JS,
-# images). A page that loads a dozen assets through TPS spends a dozen+
-# budget per view, and real humans will hit the limit. Route assets around
-# TPS in your front proxy, or raise the budget accordingly. See the README.
+# IMPORTANT: do not protect paths that serve static assets (CSS, JS, images).
+# Budget goes too fast, and if a challenge is initiated when requesting any
+# non-navigation asset, the site breaks.
 TOKEN_REQUEST_BUDGET=1000
 TOKEN_IP_SWITCH_COST=10
 
