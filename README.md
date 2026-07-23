@@ -58,6 +58,14 @@ command once and you'll be set!
 Note that while running, if the DB got *really* big, you might lose analytics
 events. On a 2-gig file we didn't, but just in case be aware it's possible.
 
+## Docker Image
+
+The docker image is set up for production use, and won't be suitable for dev
+since you'll have to rebuild the image every time you change anything.
+
+For dev, and even many production use-cases, you're better off just compiling
+the binary and shipping it.
+
 ## Challenge Tokens
 
 When a client passes a Turnstile challenge, TPS issues a signed JWT in a cookie
@@ -257,14 +265,6 @@ lose this signal for those paths*. Okay, not the end of the world, but still a
 good thing to keep in mind!
 
 [wiki-ui]: <https://github.com/uoregon-libraries/turnstile-proxy-server/wiki/Customize-UI>
-
-## Docker Image
-
-The docker image is set up for production use, and won't be suitable for dev
-since you'll have to rebuild the image every time you change anything.
-
-For dev, and even many production use-cases, you're better off just compiling
-the binary and shipping it.
 
 ## Single-Page Apps
 
