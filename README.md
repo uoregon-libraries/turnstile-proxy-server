@@ -58,6 +58,25 @@ command once and you'll be set!
 Note that while running, if the DB got *really* big, you might lose analytics
 events. On a 2-gig file we didn't, but just in case be aware it's possible.
 
+## Incorrectly Blocked Users
+
+Some extreme-privacy / extreme-security browsers and plugins can prevent real
+users from using sites protected by TPS. This is a limitation of Cloudflare's
+Turnstile and there's nothing we can do about it. Certain Safari setups seem to
+be particularly affected ("Lockdown Mode").
+
+Cloudflare is protecting your site from bots by guessing what "looks" like a
+bot. Often the privacy / security approaches people use look a lot like a bot
+trying to cover its tracks.
+
+Unfortunately, you can only choose one: block bots, costing you those users who
+are smart enough to be worried about privacy and security, or don't block bots.
+For GLAM sites with no budget, we can't keep up with bots.
+
+Make sure you use custom challenge / failure templates with a link to contact
+you. If you know enough about the various failure modes, put workarounds in
+your challenge / failure pages!
+
 ## Docker Image
 
 The docker image is set up for production use, and won't be suitable for dev
