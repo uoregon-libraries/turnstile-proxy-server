@@ -11,16 +11,13 @@ TURNSTILE_SECRET_KEY=bar
 # Choose something long and secure here for encrypting the JWT cookie
 JWT_SIGNING_KEY=shhhhhh-this-is-very-secret
 
-# Backend(s) that TPS proxies verified requests to. These should be *private*
-# URLs, not public ones, as Caddy and TPS should be fronting the protected
-# apps. Set either PROXY_TARGETS (multi-backend) or PROXY_TARGET (single
-# backend) -- if both are set, PROXY_TARGETS wins and PROXY_TARGET is ignored.
+# The backend TPS proxies verified requests to. This should be a *private*
+# URL, not a public one, as Caddy and TPS should be fronting the protected app.
 #
-# PROXY_TARGETS is a comma-separated list of "prefix=url" entries. The longest
-# request-path prefix that matches wins. Use "/" as a catch-all.
-PROXY_TARGETS="/protected/=http://app:8080,/static-protected/=http://caddy:8081"
-
-# Single-backend, legacy form. Equivalent to PROXY_TARGETS="/=<url>".
+# TPS proxies everything you route to it here. Sending different paths to
+# different backends is your front proxy's job: either route each protected
+# path to its own TPS instance, or point TPS at an internal listener on your
+# front proxy that does the routing (see example/ for the latter).
 PROXY_TARGET="http://localhost"
 
 # Where will you record the stats? TPS logs one decision event per request
@@ -78,15 +75,6 @@ TOKEN_BIND_USER_AGENT=true
 # non-navigation asset, the site breaks.
 TOKEN_REQUEST_BUDGET=1000
 TOKEN_IP_SWITCH_COST=10
-
-# Challenge mode: which requests are challenged when they don't carry a valid
-# token. This was going to be a way to help with single-page apps since they do
-# their reqeuests in the background, making them impossible to protect at a
-# page level.
-#
-# Leave this as "all". TPS is turning out to be the wrong place to try and
-# solve the problems single-page apps create.
-CHALLENGE_MODE=all
 
 # Shared secret that unlocks TPS's analytics endpoint under the reserved
 # /.tps/ path: /.tps/report (JSON challenge stats). When unset, the endpoint is

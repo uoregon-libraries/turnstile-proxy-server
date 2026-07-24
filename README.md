@@ -14,6 +14,26 @@ far easier than altering and redeploying your complex app.
 Look at [`env-example`](env-example) for details on the environment variables
 you need to set up. Once set, you can simply compile (with `make`) and run.
 
+### One TPS, one backend
+
+`PROXY_TARGET` is a single URL, and every request TPS verifies goes there. TPS
+does not route: it doesn't match paths, pick backends, or decide what deserves
+a challenge in the first place. Your front proxy already does all of that, and
+does it better.
+
+So when one TPS and one backend isn't enough, reach for Caddy (or nginx, or
+whatever's in front):
+
+- **Different paths, different backends?** Route each protected path to its own
+  TPS instance. They're small and cheap, and each gets its own `PROXY_TARGET`.
+- **Only want to challenge *some* requests?** Only route those requests to TPS.
+  Anything your front proxy sends straight to the app is never challenged, never
+  charged against a token budget, and never even seen by TPS.
+- **Need to protect assets your front proxy serves itself?** Give it a second,
+  internal-only listener with no Turnstile rules, point `PROXY_TARGET` at that,
+  and let it route. [`example/`](example/) is a working stack that does exactly
+  this — including protecting two different backends through one TPS.
+
 ## Usage
 
 Build via `make`, and run via `./bin/tps serve`. For local dev work, you can
@@ -250,13 +270,33 @@ GLAM world where we have lots of necessary harvesting beyond just SEO).
 
 ---
 
-We added a configuration to challenge navigation-only requests (based on
-`Sec-Fetch-Mode`), but (a) this is better done in your main reverse-proxy so
-TPS never sees non-navigation requests to begin with, and (b) SPAs. Are. A.
+We briefly shipped a setting to try and help via `Sec-Fetch-*` header matching,
+then ended up removing it: (a) this is better done in your main reverse-proxy
+so TPS never sees non-navigation requests to begin with, and (b) SPAs. Are. A.
 Disaster. The ones we're trying to protect don't use navigation anywhere. Every
 request is to a REST API. No HTML. This is literally impossible to protect via
 an edge service. TPS is an edge service. Edge services are exactly where you
 want your WAF running.
+
+If you want to use fetch headers to only send navigation requests to TPS, set
+up something like this in Caddy:
+
+```
+@challenge {
+    path /search* /facets*
+    header Sec-Fetch-Mode navigate
+}
+handle @challenge {
+    reverse_proxy tps:8080
+}
+handle {
+    reverse_proxy app:8080
+}
+```
+
+This won't work in all cases, but *might* help some. And you'll really need to
+learn about the different fetch headers and how they're used by browsers and
+bots. It's obnoxious.
 
 So for SPAs, you're on your own. You'll have to edit page templates and let
 your inefficient node runners present and validate challenges whatever way you

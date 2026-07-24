@@ -1,5 +1,45 @@
 # Changelog
 
+## v3.0.0
+
+This release takes features *away*. Both of them were TPS doing a reverse
+proxy's job, badly: picking a backend by path, and deciding which requests
+deserve a challenge. Caddy (or nginx, or whatever you already run in front of
+TPS) does both better, and TPS is smaller and easier to reason about without
+them. TPS now has one backend and challenges everything you route to it.
+
+### Breaking changes
+
+- **`PROXY_TARGETS` is removed; `PROXY_TARGET` is the only way to set a
+  backend.** It takes a single URL (scheme and host required) and every
+  verified request goes there. Need more than one backend? Run one TPS per
+  backend, or point `PROXY_TARGET` at an internal listener on your front proxy
+  and let it route — `example/` now demonstrates the latter.
+- **`CHALLENGE_MODE` is removed.** Every request routed to TPS that lacks a
+  valid token is challenged. To challenge only top-level navigations, match on
+  `Sec-Fetch-Mode` in your front proxy and route only those requests to TPS;
+  see "Single-Page Apps" in the README for the Caddy snippet.
+- **TPS refuses to start while either variable is set**, with a message
+  pointing at the replacement, rather than quietly behaving differently than
+  your config asks for. Unset them once you've migrated.
+- **The `nav_skip` event outcome is gone**, since nothing produces it anymore.
+  Existing `nav_skip` rows in an event log are harmless and reports were never
+  built on them.
+
+### Upgrade notes
+
+- **Single backend, `/` catch-all**: if your `PROXY_TARGETS` was one entry with
+  a `/` prefix, this is just a rename — `PROXY_TARGET="<url>"` and you're done.
+- **Multiple backends**: route each protected path to its own TPS instance, or
+  add an internal-only listener to your front proxy that does the path routing
+  and give TPS that as its single `PROXY_TARGET`. The second approach is what
+  `example/` uses, including for assets Caddy serves itself.
+- **`CHALLENGE_MODE=navigation`**: move the decision into the front proxy. Note
+  the behavior isn't identical — TPS treated a *missing* `Sec-Fetch-Mode` as a
+  navigation (so header-less scrapers were still challenged), while a
+  `header Sec-Fetch-Mode navigate` matcher won't. Add a matcher for the missing
+  header if you care about those clients.
+
 ## v2.0.0
 
 This release replaces the external MariaDB request log with an embedded SQLite

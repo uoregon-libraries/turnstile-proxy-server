@@ -2,24 +2,23 @@ services:
   app:
     build: ./app
 
-  # Single TPS instance fronting two backends:
-  #   /protected/*         -> the app
-  #   /static-protected/*  -> Caddy's internal :8081 listener, which serves
-  #                           static files with no Turnstile rule (so a
-  #                           verified replay does not loop back into a
-  #                           challenge).
+  # TPS proxies everything Caddy routes to it -- both /protected/* and
+  # /static-protected/* -- to Caddy's internal :8081 listener. That listener
+  # has no Turnstile rules (so a verified replay does not loop back into a
+  # challenge) and is where the per-path routing happens: static files are
+  # served directly, everything else goes to the app.
   tps:
     build: ..
     environment:
       GIN_MODE: "release"
       BIND_ADDR: ":8080"
-      PROXY_TARGETS: "/protected/=http://app:8080,/static-protected/=http://caddy:8081"
+      PROXY_TARGET: "http://caddy:8081"
       LOG_DB_PATH: "/var/local/tps/data/tps.db"
     volumes:
       - tps-data:/var/local/tps/data
-    depends_on:
-      app:
-        condition: service_started
+    # No depends_on: caddy fronts tps and tps proxies back to caddy, so
+    # declaring startup order either way would be a cycle. Neither one talks to
+    # the other until a request comes in, by which point both are up.
 
   caddy:
     build: ./caddy

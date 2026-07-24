@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -81,35 +80,27 @@ type cloudflareVerifyResponse struct {
 	Hostname    string   `json:"hostname"`
 }
 
-// parsedProxyRoute is the runtime form of a PROXY_TARGETS entry: a request
-// path prefix paired with the parsed backend URL.
-type parsedProxyRoute struct {
-	Prefix string
-	Target *url.URL
-}
-
 // Server wraps a [gin.Engine], encapsulating the handlers' logic and data for
 // presenting the turnstile challenge, verifying the challenge, and finally
 // proxying successful requests
 type Server struct {
-	r              *gin.Engine
-	render         multitemplate.Renderer
-	logger         *slog.Logger
-	db             db.Store
-	siteKey        string
-	secretKey      string
-	jwtSigningKey  []byte
-	tokenLifetime  time.Duration
-	bindUserAgent  bool
-	requestBudget  int
-	ipSwitchCost   int
-	navigationOnly bool
-	adminSecret    string
-	budgetMutex    sync.Mutex
-	budgetCache    *cache.Cache
-	requestCache   *cache.Cache
-	proxyTargets   []parsedProxyRoute
-	templates      map[string]string
+	r             *gin.Engine
+	render        multitemplate.Renderer
+	logger        *slog.Logger
+	db            db.Store
+	siteKey       string
+	secretKey     string
+	jwtSigningKey []byte
+	tokenLifetime time.Duration
+	bindUserAgent bool
+	requestBudget int
+	ipSwitchCost  int
+	adminSecret   string
+	budgetMutex   sync.Mutex
+	budgetCache   *cache.Cache
+	requestCache  *cache.Cache
+	proxyTarget   *url.URL
+	templates     map[string]string
 }
 
 // NewServer creates and configures a new Server instance. You must manually
@@ -166,41 +157,18 @@ func (s *Server) SetSiteKey(k string) *Server {
 	return s
 }
 
-// SetProxyTarget is a convenience wrapper for the single-backend case: it
-// installs the given URL as a catch-all route under prefix "/".
+// SetProxyTarget parses and stores the single backend every request is
+// proxied to. It panics on an unparseable URL because the server cannot
+// function without a valid target. Sending different paths to different
+// backends is the front proxy's job: route only the paths you want protected
+// to TPS, and give TPS one backend that knows what to do with them.
 func (s *Server) SetProxyTarget(target string) *Server {
-	return s.SetProxyTargets([]proxyRoute{{Prefix: "/", Target: target}})
-}
-
-// SetProxyTargets parses each route's target URL, sorts the routes by prefix
-// length (longest first) so that a longest-match lookup is just a linear
-// scan, and stores them. Panics on any unparseable URL because the server
-// cannot function without valid targets.
-func (s *Server) SetProxyTargets(routes []proxyRoute) *Server {
-	var parsed = make([]parsedProxyRoute, 0, len(routes))
-	for _, r := range routes {
-		var u, err = url.Parse(r.Target)
-		if err != nil {
-			panic(fmt.Sprintf("invalid proxy target %q: %s", r.Target, err))
-		}
-		parsed = append(parsed, parsedProxyRoute{Prefix: r.Prefix, Target: u})
+	var u, err = url.Parse(target)
+	if err != nil {
+		panic(fmt.Sprintf("invalid proxy target %q: %s", target, err))
 	}
-	sort.SliceStable(parsed, func(i, j int) bool {
-		return len(parsed[i].Prefix) > len(parsed[j].Prefix)
-	})
-	s.proxyTargets = parsed
+	s.proxyTarget = u
 	return s
-}
-
-// pickTarget returns the backend URL for the longest configured prefix that
-// matches reqPath, or nil if no prefix matches.
-func (s *Server) pickTarget(reqPath string) *url.URL {
-	for _, r := range s.proxyTargets {
-		if strings.HasPrefix(reqPath, r.Prefix) {
-			return r.Target
-		}
-	}
-	return nil
 }
 
 // SetJWTSigningKey stores the given key for our tokens, which are used to tell
@@ -223,18 +191,6 @@ func (s *Server) SetTokenLifetime(d time.Duration) *Server {
 // budget is disabled, and surcharged on change when the budget is enabled.
 func (s *Server) SetClientBinding(userAgent bool) *Server {
 	s.bindUserAgent = userAgent
-	return s
-}
-
-// SetChallengeNavigationOnly controls whether only navigation requests (per
-// [isNavigationRequest]) are challenged. When enabled, every non-navigation
-// request — a single-page app's REST calls, scripts, images — is proxied
-// straight through with no token required, checked, or charged. This keeps
-// SPAs working when a token expires mid-session (the next page load
-// re-challenges instead), at the cost of leaving those endpoints open to
-// clients that present fetch metadata the way a browser's fetch() does.
-func (s *Server) SetChallengeNavigationOnly(navOnly bool) *Server {
-	s.navigationOnly = navOnly
 	return s
 }
 
@@ -474,8 +430,8 @@ func (s *Server) Run(addr string) error {
 	if len(s.jwtSigningKey) == 0 {
 		return errors.New("empty JWT signing key")
 	}
-	if len(s.proxyTargets) == 0 {
-		return errors.New("no proxy targets configured")
+	if s.proxyTarget == nil {
+		return errors.New("no proxy target configured")
 	}
 	s.r.HTMLRender = s.render
 
@@ -484,7 +440,7 @@ func (s *Server) Run(addr string) error {
 		"s.siteKey", s.siteKey,
 		"s.secretKey", s.secretKey,
 		"s.jwtSigningKey", s.jwtSigningKey,
-		"s.proxyTargets", s.proxyTargets,
+		"s.proxyTarget", s.proxyTarget,
 		"s.templates", s.templates,
 	)
 
@@ -548,37 +504,12 @@ func (s *Server) getTemplate(r *http.Request, shortname string) string {
 	return "core/" + shortname
 }
 
-// isNavigationRequest reports whether the request is a top-level page
-// navigation, as labeled by the browser's fetch-metadata headers. Browsers
-// since roughly 2023 (Chrome 76+, Firefox 90+, Safari 16.4+) send
-// Sec-Fetch-Mode on every request, and page JavaScript can neither forge nor
-// suppress it. A request without the header (an old browser, or a non-browser
-// client) is treated as a navigation so that a header-less scraper still gets
-// challenged rather than waved through; the corner case this costs is an old
-// browser whose token expires mid-session, since its in-page API calls can
-// only be recognized by that token.
-func isNavigationRequest(r *http.Request) bool {
-	var mode = r.Header.Get("Sec-Fetch-Mode")
-	return mode == "" || mode == "navigate"
-}
-
 func (s *Server) handleProxy(c *gin.Context) {
 	// The reserved admin prefix is always handled by TPS itself and is never
 	// proxied or challenged. It is checked before everything else so these
-	// internal endpoints can't be shadowed by a backend path or skipped in
-	// navigation mode.
+	// internal endpoints can't be shadowed by a backend path.
 	if strings.HasPrefix(c.Request.URL.Path, adminPathPrefix) {
 		s.handleAdmin(c)
-		return
-	}
-
-	if s.navigationOnly && !isNavigationRequest(c.Request) {
-		s.logger.Debug("Non-navigation request in navigation-only mode, proxying without challenge",
-			"URL", c.Request.URL.String())
-		var e = s.baseEvent(c)
-		e.Outcome = db.OutcomeNavSkip
-		s.db.LogEvent(e)
-		s.replayRequest(c, c.Request)
 		return
 	}
 
@@ -702,10 +633,10 @@ func (s *Server) handleProxy(c *gin.Context) {
 }
 
 func (s *Server) replayRequest(c *gin.Context, req *http.Request) {
-	var target = s.pickTarget(req.URL.Path)
+	var target = s.proxyTarget
 	if target == nil {
-		s.logger.Warn("No proxy target matches request path", "path", req.URL.Path)
-		c.String(http.StatusBadGateway, "No proxy target configured for this request")
+		s.logger.Error("No proxy target configured", "path", req.URL.Path)
+		c.String(http.StatusBadGateway, "No proxy target configured")
 		return
 	}
 	s.logger.Debug("Replaying request to backend",

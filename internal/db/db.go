@@ -23,7 +23,6 @@ const (
 	OutcomeChallengeRendered = "challenge_rendered" // a served challenge page's JS executed (beacon)
 	OutcomeVerifyOK          = "verify_ok"          // a challenge solution verified successfully
 	OutcomeVerifyFail        = "verify_fail"        // a challenge solution failed verification
-	OutcomeNavSkip           = "nav_skip"           // navigation-mode bypass (not a top-level navigation)
 )
 
 // Reason gives more detail about an outcome (why a challenge was served, or how
