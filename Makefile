@@ -1,8 +1,12 @@
 BUILD := $(shell git describe --tags)
 
 .PHONY: bin
-bin:
+bin: vet
 	CGO_ENABLED=0 go build -ldflags="-s -w -X turnstile-proxy-server/internal/version.Version=$(BUILD)" -o bin/tps ./cmd/tps
+
+.PHONY: vet
+vet:
+	go vet ./...
 
 .PHONY: lint
 lint:
