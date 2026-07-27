@@ -4,6 +4,14 @@
 
 ### Added
 
+- **A `challenge.go.html` / `failed.go.html` pair at the top of `TEMPLATE_PATH`
+  now replaces the built-in pages for every request.** Most sites turn out to
+  want one custom look, not one per host, and previously the only way to get
+  that was a `<hostname>/` directory per site you served. The per-host and
+  per-path directories still work and still win when they match: TPS looks for
+  the deepest matching path, then the hostname, then your top-level pair, then
+  its own built-in page. Challenge and failure pages are looked up separately,
+  so a site-specific challenge page can sit alongside a shared failure page.
 - **Custom challenge templates can just say `<challenge-form></challenge-form>`
   where the widget goes.** TPS expands that placeholder when it loads the
   template, filling in the Turnstile form, the `request_id` field, the script

@@ -407,6 +407,7 @@ func (s *Server) LoadCustomTemplates(templatePath string) {
 	if templatePath == "" {
 		return
 	}
+	templatePath = filepath.Clean(templatePath)
 
 	var err = filepath.Walk(templatePath, func(pth string, info fs.FileInfo, err error) error {
 		if err != nil {
@@ -418,8 +419,12 @@ func (s *Server) LoadCustomTemplates(templatePath string) {
 		}
 
 		if strings.HasSuffix(pth, ".go.html") {
-			var name = strings.Replace(pth, templatePath+"/", "", 1)
-			name = strings.Replace(name, ".go.html", "", 1)
+			var name, relErr = filepath.Rel(templatePath, pth)
+			if relErr != nil {
+				s.logger.Error("Cannot name custom template, skipping it", "path", pth, "error", relErr)
+				return nil
+			}
+			name = strings.TrimSuffix(name, ".go.html")
 			s.logger.Debug("Adding custom template", "name", name, "path", pth)
 			var addErr = s.render.addFile(name, afero.NewOsFs(), pth)
 			if addErr != nil {
@@ -484,6 +489,12 @@ func (s *Server) Run(addr string) error {
 	}
 }
 
+// getTemplate picks the template to render for this request, most specific
+// first: <hostname>/<path>/<shortname> narrowing a path segment at a time,
+// then <hostname>/<shortname>, then a top-level <shortname> covering every
+// host, and finally the core template built into TPS. Most sites only ever
+// need that top-level pair, so it costs nothing to have the per-host and
+// per-path layers available for the sites that do.
 func (s *Server) getTemplate(r *http.Request, shortname string) string {
 	var host = r.Host
 	var path = r.URL.Path
@@ -510,6 +521,11 @@ func (s *Server) getTemplate(r *http.Request, shortname string) string {
 			s.logger.Debug("Found custom template", "name", name)
 			return name
 		}
+	}
+
+	if s.templates[shortname] != "" {
+		s.logger.Debug("Found site-wide custom template", "name", shortname)
+		return shortname
 	}
 
 	s.logger.Debug("No custom template found, returning default")

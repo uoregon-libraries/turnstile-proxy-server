@@ -33,7 +33,10 @@ LOG_DB_PATH="/var/local/tps/data/tps.db"
 # are kept forever, so a short retention still leaves long-term report data.
 LOG_RETENTION="720h"
 
-# Where are custom templates (if any) found?
+# Where are custom templates (if any) found? Put challenge.go.html and
+# failed.go.html here and they replace TPS's built-in pages everywhere. Per-host
+# and per-path overrides live in subdirectories: <hostname>/challenge.go.html,
+# <hostname>/<url path>/challenge.go.html.
 TEMPLATE_PATH="/var/local/tps/templates"
 
 # How long a solved challenge stays valid, as a Go duration string ("30m",
