@@ -14,25 +14,22 @@ far easier than altering and redeploying your complex app.
 Look at [`env-example`](env-example) for details on the environment variables
 you need to set up. Once set, you can simply compile (with `make`) and run.
 
-### One TPS, one backend
+Critical settings you can't just set to defaults:
 
-`PROXY_TARGET` is a single URL, and every request TPS verifies goes there. TPS
-does not route: it doesn't match paths, pick backends, or decide what deserves
-a challenge in the first place. Your front proxy already does all of that, and
-does it better.
-
-So when one TPS and one backend isn't enough, reach for Caddy (or nginx, or
-whatever's in front):
-
-- **Different paths, different backends?** Route each protected path to its own
-  TPS instance. They're small and cheap, and each gets its own `PROXY_TARGET`.
-- **Only want to challenge *some* requests?** Only route those requests to TPS.
-  Anything your front proxy sends straight to the app is never challenged, never
-  charged against a token budget, and never even seen by TPS.
-- **Need to protect assets your front proxy serves itself?** Give it a second,
-  internal-only listener with no Turnstile rules, point `PROXY_TARGET` at that,
-  and let it route. [`example/`](example/) is a working stack that does exactly
-  this — including protecting two different backends through one TPS.
+- Turnstile site key / secret key must both be set, and require a Cloudflare
+  account and Turnstile widget setup
+- `PROXY_TARGET`: your protected app. Every request TPS verifies is sent here.
+  This should be a host+port that is *not* publicly accessible, otherwise bots
+  can skip the protection TPS is trying to provide.
+- `JWT_SIGNING_KEY`: *must* be set to something bots can't figure out. This
+  signs the tokens, and a bot that learns the key can set up fake tokens that
+  allow it to bypass TPS entirely. Unlikely, but possible, and really bad if it
+  does happen in practice.
+- `ADMIN_SECRET`: not critical to be highly secure: there's nothing sensitive
+  or dangerous in the admin endpoints, but you probably don't want random
+  people looking at your site's challenge numbers, so you may as well make it
+  "secure enough". And if we do add anything sensitive in the future, it would
+  be gated by this value most likely.
 
 ## Usage
 
