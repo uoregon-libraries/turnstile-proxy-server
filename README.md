@@ -243,10 +243,12 @@ Obviously this can be trivially manipulated, but it doesn't really help bots
 any to do that, and even if they do, your site runs fine, you just won't know
 how many dumb vs. smart bots you're seeing.
 
-**Note**: if you use [custom challenge templates][wiki-ui], keep the
-`navigator.sendBeacon('/.tps/beacon')` snippet from the core template, *or you
-lose this signal for those paths*. Okay, not the end of the world, but still a
-good thing to keep in mind!
+**Note**: [custom challenge templates][wiki-ui] that use the `<challenge-form>`
+placeholder get the beacon for free — TPS puts it in along with the form. But
+if you hand-wrote your challenge markup, keep the
+`navigator.sendBeacon('/.tps/beacon')` snippet in it, *or you lose this signal
+for those paths*. Okay, not the end of the world, but still a good thing to
+keep in mind!
 
 [wiki-ui]: <https://github.com/uoregon-libraries/turnstile-proxy-server/wiki/Customize-UI>
 

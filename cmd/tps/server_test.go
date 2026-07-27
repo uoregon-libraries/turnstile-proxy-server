@@ -311,7 +311,9 @@ func newTestServerWithStore(t *testing.T, backendURL string, store db.Store) *Se
 	s := NewServer(gin.New(), store).
 		SetJWTSigningKey("test-key").
 		SetProxyTarget(backendURL)
-	s.render.AddFromString("core/challenge", "challenge page {{.RequestID}}")
+	if err := s.render.addString("core/challenge", "challenge page {{.RequestID}}"); err != nil {
+		t.Fatalf("registering stub challenge template: %v", err)
+	}
 	return s
 }
 
