@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -92,24 +94,14 @@ func getenv() {
 		errs = append(errs, "JWT_SIGNING_KEY is not set")
 	}
 
-	var rawTargets = os.Getenv("PROXY_TARGETS")
-	var legacyTarget = os.Getenv("PROXY_TARGET")
-	switch {
-	case rawTargets != "":
-		var routes, err = parseProxyTargets(rawTargets)
-		if err != nil {
-			errs = append(errs, "PROXY_TARGETS: "+err.Error())
-		} else {
-			proxyTargets = routes
-		}
-		if legacyTarget != "" {
-			logger.Warn("Both PROXY_TARGETS and PROXY_TARGET are set; PROXY_TARGET is ignored")
-		}
-	case legacyTarget != "":
-		proxyTargets = []proxyRoute{{Prefix: "/", Target: legacyTarget}}
-	default:
-		errs = append(errs, "neither PROXY_TARGETS nor PROXY_TARGET is set")
+	proxyTarget = os.Getenv("PROXY_TARGET")
+	if proxyTarget == "" {
+		errs = append(errs, "PROXY_TARGET is not set")
+	} else if err := validateTargetURL(proxyTarget); err != nil {
+		errs = append(errs, "PROXY_TARGET: "+err.Error())
 	}
+
+	errs = append(errs, removedVarErrors()...)
 
 	tokenLifetime = 4 * time.Hour
 	if raw := os.Getenv("TOKEN_LIFETIME"); raw != "" {
@@ -134,15 +126,6 @@ func getenv() {
 	tokenBindUserAgent = parseBoolEnv("TOKEN_BIND_USER_AGENT", true, &errs)
 	tokenRequestBudget = parseIntEnv("TOKEN_REQUEST_BUDGET", 1000, 0, &errs)
 	tokenIPSwitchCost = parseIntEnv("TOKEN_IP_SWITCH_COST", 10, 1, &errs)
-
-	switch raw := os.Getenv("CHALLENGE_MODE"); raw {
-	case "", "all":
-		challengeNavigationOnly = false
-	case "navigation":
-		challengeNavigationOnly = true
-	default:
-		errs = append(errs, fmt.Sprintf(`CHALLENGE_MODE %q must be "all" or "navigation"`, raw))
-	}
 
 	if templatePath == "" {
 		templatePath = "/var/local/tps/templates"
@@ -191,48 +174,41 @@ func parseIntEnv(name string, def, minVal int, errs *[]string) int {
 	return n
 }
 
-// parseProxyTargets parses the comma-separated "prefix=url[,prefix=url...]"
-// format of the PROXY_TARGETS env var. Entries with whitespace around the
-// commas or equals are tolerated. Each target URL must parse with a scheme
-// and host. Duplicate prefixes are rejected.
-func parseProxyTargets(raw string) ([]proxyRoute, error) {
-	var entries = strings.Split(raw, ",")
-	var routes = make([]proxyRoute, 0, len(entries))
-	var seen = make(map[string]bool, len(entries))
-
-	for i, entry := range entries {
-		var trimmed = strings.TrimSpace(entry)
-		if trimmed == "" {
-			return nil, fmt.Errorf("entry %d is empty", i+1)
-		}
-
-		var rawPrefix, rawTarget, ok = strings.Cut(trimmed, "=")
-		if !ok {
-			return nil, fmt.Errorf("entry %d %q is missing '='", i+1, trimmed)
-		}
-		var prefix = strings.TrimSpace(rawPrefix)
-		var target = strings.TrimSpace(rawTarget)
-		if prefix == "" {
-			return nil, fmt.Errorf("entry %d has an empty prefix", i+1)
-		}
-		if target == "" {
-			return nil, fmt.Errorf("entry %d (prefix %q) has an empty target URL", i+1, prefix)
-		}
-		if seen[prefix] {
-			return nil, fmt.Errorf("prefix %q is defined more than once", prefix)
-		}
-
-		var parsed, err = url.Parse(target)
-		if err != nil {
-			return nil, fmt.Errorf("entry %d (prefix %q): invalid target URL %q: %s", i+1, prefix, target, err)
-		}
-		if parsed.Scheme == "" || parsed.Host == "" {
-			return nil, fmt.Errorf("entry %d (prefix %q): target URL %q must include scheme and host", i+1, prefix, target)
-		}
-
-		seen[prefix] = true
-		routes = append(routes, proxyRoute{Prefix: prefix, Target: target})
+// validateTargetURL rejects a backend URL that can't be proxied to: it has to
+// parse, and it has to name a scheme and host.
+func validateTargetURL(target string) error {
+	var parsed, err = url.Parse(target)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %s", target, err)
 	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("URL %q must include scheme and host, e.g. http://app:8080", target)
+	}
+	return nil
+}
 
-	return routes, nil
+// removedVars maps env vars that used to configure a feature to the advice for
+// whoever still has them set. TPS refuses to start while one is present rather
+// than quietly behaving differently than the config asks for.
+var removedVars = map[string]string{
+	"PROXY_TARGETS": "multiple backends are gone; set PROXY_TARGET to a single backend " +
+		"and let your front proxy route paths to the right place (see the README)",
+	"CHALLENGE_MODE": "navigation-only challenging is gone; keep non-navigation requests " +
+		"away from TPS in your front proxy instead (see the README)",
+}
+
+// removedVarErrors returns one error string per removed variable still set in
+// the environment. A variable set to the empty string doesn't count: that's
+// indistinguishable from unset, and nothing is being asked for.
+func removedVarErrors() []string {
+	var errs []string
+	// Sorted so a config with several removed vars reports them the same way
+	// every run
+	var names = slices.Sorted(maps.Keys(removedVars))
+	for _, name := range names {
+		if os.Getenv(name) != "" {
+			errs = append(errs, fmt.Sprintf("%s is no longer supported: %s", name, removedVars[name]))
+		}
+	}
+	return errs
 }

@@ -17,52 +17,17 @@ import (
 	"github.com/patrickmn/go-cache"
 )
 
-func TestPickTarget(t *testing.T) {
-	routes := []proxyRoute{
-		{Prefix: "/", Target: "http://catchall:80"},
-		{Prefix: "/protected/", Target: "http://app:8080"},
-		{Prefix: "/static-protected/", Target: "http://caddy:8081"},
-		{Prefix: "/protected/deep/", Target: "http://app-deep:8080"},
+func TestSetProxyTarget(t *testing.T) {
+	s := (&Server{}).SetProxyTarget("http://app:8080/base")
+	if s.proxyTarget == nil {
+		t.Fatal("SetProxyTarget stored no target")
 	}
-	s := (&Server{}).SetProxyTargets(routes)
-
-	tests := []struct {
-		path    string
-		wantURL string
-	}{
-		{"/protected/foo", "http://app:8080"},
-		{"/protected/deep/foo", "http://app-deep:8080"},
-		{"/static-protected/index.html", "http://caddy:8081"},
-		{"/anything-else", "http://catchall:80"},
-		{"/", "http://catchall:80"},
+	if got := s.proxyTarget.String(); got != "http://app:8080/base" {
+		t.Errorf("proxyTarget = %s, want http://app:8080/base", got)
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.path, func(t *testing.T) {
-			got := s.pickTarget(tc.path)
-			if got == nil {
-				t.Fatalf("pickTarget(%q) returned nil, want %s", tc.path, tc.wantURL)
-			}
-			if got.String() != tc.wantURL {
-				t.Errorf("pickTarget(%q) = %s, want %s", tc.path, got.String(), tc.wantURL)
-			}
-		})
-	}
-}
-
-func TestPickTargetNoMatch(t *testing.T) {
-	s := (&Server{}).SetProxyTargets([]proxyRoute{
-		{Prefix: "/foo/", Target: "http://foo:8080"},
-	})
-	if got := s.pickTarget("/bar/baz"); got != nil {
-		t.Errorf("pickTarget(/bar/baz) = %v, want nil", got)
-	}
-}
-
-func TestPickTargetEmpty(t *testing.T) {
-	s := &Server{}
-	if got := s.pickTarget("/anything"); got != nil {
-		t.Errorf("pickTarget on empty Server = %v, want nil", got)
+	if unset := (&Server{}).proxyTarget; unset != nil {
+		t.Errorf("proxyTarget on an unconfigured Server = %v, want nil", unset)
 	}
 }
 
@@ -308,36 +273,6 @@ func TestChargeToken(t *testing.T) {
 	})
 }
 
-func TestIsNavigationRequest(t *testing.T) {
-	tests := []struct {
-		mode string
-		want bool
-	}{
-		{"", true},
-		{"navigate", true},
-		{"cors", false},
-		{"no-cors", false},
-		{"same-origin", false},
-		{"websocket", false},
-	}
-
-	for _, tc := range tests {
-		name := tc.mode
-		if name == "" {
-			name = "header absent"
-		}
-		t.Run(name, func(t *testing.T) {
-			r := httptest.NewRequest("GET", "/anything", nil)
-			if tc.mode != "" {
-				r.Header.Set("Sec-Fetch-Mode", tc.mode)
-			}
-			if got := isNavigationRequest(r); got != tc.want {
-				t.Errorf("isNavigationRequest(Sec-Fetch-Mode: %q) = %v, want %v", tc.mode, got, tc.want)
-			}
-		})
-	}
-}
-
 // fakeStore captures logged events in memory so tests can assert on the
 // decisions handleProxy records.
 type fakeStore struct {
@@ -363,145 +298,106 @@ func (f *fakeStore) snapshot() []db.Event {
 	return append([]db.Event(nil), f.events...)
 }
 
-// newChallengeModeServer builds a full Server proxying to the given backend,
-// with a stub challenge template registered so the challenge page can render
-func newChallengeModeServer(t *testing.T, backendURL string, navOnly bool) *Server {
+// newTestServer builds a full Server proxying to the given backend, with a
+// stub challenge template registered so the challenge page can render
+func newTestServer(t *testing.T, backendURL string) *Server {
 	t.Helper()
-	return newChallengeModeServerWithStore(t, backendURL, navOnly, db.NewNoopStore())
+	return newTestServerWithStore(t, backendURL, db.NewNoopStore())
 }
 
-func newChallengeModeServerWithStore(t *testing.T, backendURL string, navOnly bool, store db.Store) *Server {
+func newTestServerWithStore(t *testing.T, backendURL string, store db.Store) *Server {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	s := NewServer(gin.New(), store).
 		SetJWTSigningKey("test-key").
-		SetProxyTarget(backendURL).
-		SetChallengeNavigationOnly(navOnly)
+		SetProxyTarget(backendURL)
 	s.render.AddFromString("core/challenge", "challenge page {{.RequestID}}")
 	return s
 }
 
 // TestHandleProxyLogsEvents checks that handleProxy records the expected
-// decision event for the two no-token paths: a challenged navigation and a
-// navigation-mode skip that proxies straight through.
+// decision event for a tokenless request.
 func TestHandleProxyLogsEvents(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("backend response"))
 	}))
 	defer backend.Close()
 
-	send := func(t *testing.T, s *Server, secFetchMode string) {
-		t.Helper()
-		tps := httptest.NewServer(s.r)
-		defer tps.Close()
-		req, _ := http.NewRequest("GET", tps.URL+"/protected/data", nil)
-		if secFetchMode != "" {
-			req.Header.Set("Sec-Fetch-Mode", secFetchMode)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("sending request: %v", err)
-		}
-		resp.Body.Close()
+	store := &fakeStore{}
+	s := newTestServerWithStore(t, backend.URL, store)
+
+	tps := httptest.NewServer(s.r)
+	defer tps.Close()
+	req, _ := http.NewRequest("GET", tps.URL+"/protected/data", nil)
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("sending request: %v", err)
 	}
+	resp.Body.Close()
 
-	t.Run("tokenless navigation logs a challenged/no_cookie event", func(t *testing.T) {
-		store := &fakeStore{}
-		s := newChallengeModeServerWithStore(t, backend.URL, false, store)
-		send(t, s, "navigate")
-
-		events := store.snapshot()
-		if len(events) != 1 {
-			t.Fatalf("got %d events, want 1: %+v", len(events), events)
-		}
-		if events[0].Outcome != db.OutcomeChallenged || events[0].Reason != db.ReasonNoCookie {
-			t.Errorf("event = {%q, %q}, want {%q, %q}",
-				events[0].Outcome, events[0].Reason, db.OutcomeChallenged, db.ReasonNoCookie)
-		}
-		if events[0].Path != "/protected/data" {
-			t.Errorf("event path = %q, want /protected/data", events[0].Path)
-		}
-	})
-
-	t.Run("navigation-mode skip logs a nav_skip event", func(t *testing.T) {
-		store := &fakeStore{}
-		s := newChallengeModeServerWithStore(t, backend.URL, true, store)
-		send(t, s, "cors")
-
-		events := store.snapshot()
-		if len(events) != 1 {
-			t.Fatalf("got %d events, want 1: %+v", len(events), events)
-		}
-		if events[0].Outcome != db.OutcomeNavSkip {
-			t.Errorf("event outcome = %q, want %q", events[0].Outcome, db.OutcomeNavSkip)
-		}
-	})
+	events := store.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1: %+v", len(events), events)
+	}
+	if events[0].Outcome != db.OutcomeChallenged || events[0].Reason != db.ReasonNoCookie {
+		t.Errorf("event = {%q, %q}, want {%q, %q}",
+			events[0].Outcome, events[0].Reason, db.OutcomeChallenged, db.ReasonNoCookie)
+	}
+	if events[0].Path != "/protected/data" {
+		t.Errorf("event path = %q, want /protected/data", events[0].Path)
+	}
 }
 
-func TestChallengeNavigationOnly(t *testing.T) {
+// TestChallengesEveryRequestKind guards the removal of navigation-only mode:
+// anything routed to TPS without a valid token gets challenged, whatever the
+// browser says the request is for. Keeping background requests away from TPS
+// is the front proxy's job now.
+func TestChallengesEveryRequestKind(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("backend response"))
 	}))
 	defer backend.Close()
 
-	// do sends a tokenless GET with the given Sec-Fetch-Mode ("" omits the
-	// header) through a live TPS instance and returns the status and body.
+	s := newTestServer(t, backend.URL)
+
 	// The reverse proxy needs a real server-backed ResponseWriter, so a bare
 	// httptest.NewRecorder won't do here.
-	do := func(t *testing.T, s *Server, secFetchMode string) (int, string) {
-		t.Helper()
-		tps := httptest.NewServer(s.r)
-		defer tps.Close()
+	tps := httptest.NewServer(s.r)
+	defer tps.Close()
 
-		req, err := http.NewRequest("GET", tps.URL+"/protected/data", nil)
-		if err != nil {
-			t.Fatalf("building request: %v", err)
+	// "" omits the header entirely
+	for _, mode := range []string{"", "navigate", "cors", "no-cors", "same-origin", "websocket"} {
+		name := mode
+		if name == "" {
+			name = "header absent"
 		}
-		if secFetchMode != "" {
-			req.Header.Set("Sec-Fetch-Mode", secFetchMode)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("sending request: %v", err)
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("reading response body: %v", err)
-		}
-		return resp.StatusCode, string(body)
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequest("GET", tps.URL+"/protected/data", nil)
+			if err != nil {
+				t.Fatalf("building request: %v", err)
+			}
+			if mode != "" {
+				req.Header.Set("Sec-Fetch-Mode", mode)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("sending request: %v", err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("reading response body: %v", err)
+			}
+
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("got status %d, want %d (challenge)", resp.StatusCode, http.StatusForbidden)
+			}
+			if strings.Contains(string(body), "backend response") {
+				t.Error("backend response leaked through without a token")
+			}
+		})
 	}
-
-	t.Run("navigation mode proxies non-navigations without a token", func(t *testing.T) {
-		s := newChallengeModeServer(t, backend.URL, true)
-		for _, mode := range []string{"cors", "no-cors", "same-origin", "websocket"} {
-			code, body := do(t, s, mode)
-			if code != http.StatusOK || !strings.Contains(body, "backend response") {
-				t.Errorf("Sec-Fetch-Mode %q: got status %d, want the backend response proxied through", mode, code)
-			}
-		}
-	})
-
-	t.Run("navigation mode still challenges navigations", func(t *testing.T) {
-		s := newChallengeModeServer(t, backend.URL, true)
-		for _, mode := range []string{"navigate", ""} {
-			code, body := do(t, s, mode)
-			if code != http.StatusForbidden {
-				t.Errorf("Sec-Fetch-Mode %q: got status %d, want %d (challenge)", mode, code, http.StatusForbidden)
-			}
-			if strings.Contains(body, "backend response") {
-				t.Errorf("Sec-Fetch-Mode %q: backend response leaked through without a token", mode)
-			}
-		}
-	})
-
-	t.Run("default mode challenges non-navigations too", func(t *testing.T) {
-		s := newChallengeModeServer(t, backend.URL, false)
-		code, _ := do(t, s, "cors")
-		if code != http.StatusForbidden {
-			t.Errorf("got status %d, want %d (challenge)", code, http.StatusForbidden)
-		}
-	})
 }
 
 func TestTokenMatchesClient(t *testing.T) {

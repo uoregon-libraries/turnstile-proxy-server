@@ -46,34 +46,41 @@ docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./tps-root.cr
 # then import tps-root.crt into your browser/OS trust store
 ```
 
-## Protecting assets that Caddy serves itself
+## Protecting more than one backend (and assets Caddy serves itself)
 
-The example demonstrates two protection patterns, both handled by a single
-TPS instance using its `PROXY_TARGETS` config:
+TPS has exactly one backend: `PROXY_TARGET`. That's deliberate — deciding which
+path belongs to which backend is what your front proxy is already good at. This
+example protects two very different things anyway:
 
-- `/protected/*` is proxied to the backend app, as in the simplest TPS setup.
-- `/static-protected/*` is proxied to **Caddy itself**, on an internal-only
-  listener that serves static files. Visit `/static-protected/` to try it.
+- `/protected/*` — a page served by the backend app.
+- `/static-protected/*` — static files served by **Caddy itself**. Visit
+  `/static-protected/` to try it.
 
-The naive single-backend setup loops forever for static assets: if Caddy
-routes `/static-protected/*` through TPS, and TPS proxies back to the same
-Caddy listener, the replayed request just gets routed through TPS again. To
-break the loop, Caddy runs a second, internal-only listener on `:8081` that
-serves the static files directly with no Turnstile rule. TPS's `PROXY_TARGETS`
-maps `/static-protected/` to `http://caddy:8081`, so once it verifies a
-challenge it replays the request against the internal listener and the file
-is served — no loop.
+The trick is a second, internal-only Caddy listener on `:8081` with no
+Turnstile rules. Caddy's public listener routes both protected prefixes to TPS,
+TPS challenges them, and everything it verifies is replayed to `:8081`, which
+does the routing: `/static-protected/*` is served from disk, everything else is
+proxied to the app.
+
+That internal listener is also what keeps Caddy-served assets from looping
+forever. Routing `/static-protected/*` through TPS and having TPS proxy back to
+the *public* listener would just route the replayed request through TPS again;
+the internal listener has no Turnstile rule, so the loop never forms.
 
 The relevant pieces:
 
 - `caddy/Caddyfile` — the public `https://{$SITE_HOST}` listener routes both
   `/protected/*` and `/static-protected/*` to `tps`; the internal `:8081`
-  listener is a plain `file_server` with no Turnstile rules.
-- `compose.yml` — `tps` has
-  `PROXY_TARGETS="/protected/=http://app:8080,/static-protected/=http://caddy:8081"`,
-  and port `8081` is deliberately not published, so the internal listener is
-  only reachable inside the compose network.
+  listener serves `/static-protected/*` with `file_server` and proxies the rest
+  to the app, with no Turnstile rules anywhere in it.
+- `compose.yml` — `tps` has `PROXY_TARGET="http://caddy:8081"`, and port `8081`
+  is deliberately not published, so the internal listener is only reachable
+  inside the compose network.
 - `caddy/static/` — the files Caddy serves on `:8081`.
+
+The alternative, if you'd rather not have TPS proxy back through your front
+proxy, is one TPS instance per backend: they're cheap, and each one gets its
+own `PROXY_TARGET`.
 
 A single completed challenge unlocks both protected routes (TPS sets a
 `tps-jwt` cookie at path `/`).

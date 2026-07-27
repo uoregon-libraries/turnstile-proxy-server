@@ -8,8 +8,8 @@
 }
 
 # Public-facing listener. Both protected prefixes route to the same TPS
-# instance, which decides per-request which backend to proxy to based on
-# its PROXY_TARGETS config. Everything else goes straight to the app.
+# instance, which challenges them and proxies whatever it verifies to the
+# internal :8081 listener below. Everything else goes straight to the app.
 #
 # SITE_HOST controls the address (and TLS cert) of this listener; it defaults
 # to "localhost" so `docker compose up` just works on the same machine. Set it
@@ -46,14 +46,21 @@ https://{$SITE_HOST:localhost} {
   }
 }
 
-# Internal-only listener used as the /static-protected/* backend in TPS's
-# PROXY_TARGETS. It serves the static assets directly with no Turnstile rule,
-# so when TPS replays a verified request here it does not loop back into a
-# challenge. This port is not published in compose.yml, so it is only
-# reachable from inside the compose network.
+# Internal-only listener: TPS's one and only backend (PROXY_TARGET). It has no
+# Turnstile rules, so when TPS replays a verified request here it does not loop
+# back into a challenge, and it does the per-path routing TPS deliberately
+# doesn't: static files are served from disk, everything else goes to the app.
+# This port is not published in compose.yml, so it is only reachable from
+# inside the compose network.
 :8081 {
   log
 
-  root * /srv
-  file_server
+  handle /static-protected/* {
+    root * /srv
+    file_server
+  }
+
+  handle {
+    reverse_proxy app:8080
+  }
 }

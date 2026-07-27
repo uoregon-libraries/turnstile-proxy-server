@@ -14,6 +14,23 @@ far easier than altering and redeploying your complex app.
 Look at [`env-example`](env-example) for details on the environment variables
 you need to set up. Once set, you can simply compile (with `make`) and run.
 
+Critical settings you can't just set to defaults:
+
+- Turnstile site key / secret key must both be set, and require a Cloudflare
+  account and Turnstile widget setup
+- `PROXY_TARGET`: your protected app. Every request TPS verifies is sent here.
+  This should be a host+port that is *not* publicly accessible, otherwise bots
+  can skip the protection TPS is trying to provide.
+- `JWT_SIGNING_KEY`: *must* be set to something bots can't figure out. This
+  signs the tokens, and a bot that learns the key can set up fake tokens that
+  allow it to bypass TPS entirely. Unlikely, but possible, and really bad if it
+  does happen in practice.
+- `ADMIN_SECRET`: not critical to be highly secure: there's nothing sensitive
+  or dangerous in the admin endpoints, but you probably don't want random
+  people looking at your site's challenge numbers, so you may as well make it
+  "secure enough". And if we do add anything sensitive in the future, it would
+  be gated by this value most likely.
+
 ## Usage
 
 Build via `make`, and run via `./bin/tps serve`. For local dev work, you can
@@ -250,13 +267,33 @@ GLAM world where we have lots of necessary harvesting beyond just SEO).
 
 ---
 
-We added a configuration to challenge navigation-only requests (based on
-`Sec-Fetch-Mode`), but (a) this is better done in your main reverse-proxy so
-TPS never sees non-navigation requests to begin with, and (b) SPAs. Are. A.
+We briefly shipped a setting to try and help via `Sec-Fetch-*` header matching,
+then ended up removing it: (a) this is better done in your main reverse-proxy
+so TPS never sees non-navigation requests to begin with, and (b) SPAs. Are. A.
 Disaster. The ones we're trying to protect don't use navigation anywhere. Every
 request is to a REST API. No HTML. This is literally impossible to protect via
 an edge service. TPS is an edge service. Edge services are exactly where you
 want your WAF running.
+
+If you want to use fetch headers to only send navigation requests to TPS, set
+up something like this in Caddy:
+
+```
+@challenge {
+    path /search* /facets*
+    header Sec-Fetch-Mode navigate
+}
+handle @challenge {
+    reverse_proxy tps:8080
+}
+handle {
+    reverse_proxy app:8080
+}
+```
+
+This won't work in all cases, but *might* help some. And you'll really need to
+learn about the different fetch headers and how they're used by browsers and
+bots. It's obnoxious.
 
 So for SPAs, you're on your own. You'll have to edit page templates and let
 your inefficient node runners present and validate challenges whatever way you

@@ -16,18 +16,11 @@ import (
 	sloggin "github.com/samber/slog-gin"
 )
 
-// proxyRoute is one entry of the parsed PROXY_TARGETS config: a request path
-// prefix and the backend URL string to proxy matching requests to.
-type proxyRoute struct {
-	Prefix string
-	Target string
-}
-
 var bindAddr string
 var turnstileSecretKey string
 var turnstileSiteKey string
 var jwtSigningKey string
-var proxyTargets []proxyRoute
+var proxyTarget string
 var logDBPath string
 var logRetention time.Duration
 var templatePath string
@@ -35,7 +28,6 @@ var tokenLifetime time.Duration
 var tokenBindUserAgent bool
 var tokenRequestBudget int
 var tokenIPSwitchCost int
-var challengeNavigationOnly bool
 var adminSecret string
 
 var logger *slog.Logger
@@ -114,11 +106,9 @@ func help() {
 	fmt.Println("- TURNSTILE_SECRET_KEY (required): your Turnstile secret key")
 	fmt.Println("- TURNSTILE_SITE_KEY (required): your Turnstile site key")
 	fmt.Println("- JWT_SIGNING_KEY (required): a key to sign JWTs with; pick something long and random")
-	fmt.Println("- PROXY_TARGETS: comma-separated list of \"prefix=url\" entries selecting a backend by request path")
-	fmt.Println("                 prefix, e.g., \"/protected/=http://app:8080,/static-protected/=http://caddy:8081\".")
-	fmt.Println("                 Longest matching prefix wins. Either PROXY_TARGETS or PROXY_TARGET must be set.")
-	fmt.Println("- PROXY_TARGET: legacy single-target form, equivalent to PROXY_TARGETS=\"/=<url>\". Ignored if")
-	fmt.Println("                 PROXY_TARGETS is set.")
+	fmt.Println("- PROXY_TARGET (required): the backend all verified requests are proxied to, e.g.,")
+	fmt.Println("                 \"http://app:8080\". Sending different paths to different backends is your front")
+	fmt.Println("                 proxy's job; TPS just protects what you route to it.")
 	fmt.Println("- LOG_DB_PATH (optional): filesystem path to the SQLite event-log database, e.g.,")
 	fmt.Println("                 /var/local/tps/tps.db. The file (and its WAL siblings) is created if absent.")
 	fmt.Println("                 If unset, event logging is disabled.")
@@ -135,11 +125,6 @@ func help() {
 	fmt.Println("- TOKEN_IP_SWITCH_COST (optional): budget cost of a request whose IP differs from the token's")
 	fmt.Println("                 previous request. IPs are tracked exactly for IPv4 and as a /64 for IPv6.")
 	fmt.Println("                 Defaults to 10; minimum 1 (an ordinary request).")
-	fmt.Println(`- CHALLENGE_MODE (optional): "all" (the default) challenges every request that lacks a valid`)
-	fmt.Println(`                 token. "navigation" challenges only top-level page navigations (per the browser's`)
-	fmt.Println("                 Sec-Fetch-Mode header) and proxies everything else through with no token needed.")
-	fmt.Println("                 Use \"navigation\" for single-page apps whose background API calls can't render a")
-	fmt.Println("                 challenge page; note it leaves the API endpoints open to bots. See the README.")
 	fmt.Println("- ADMIN_SECRET (optional): shared secret unlocking the /.tps/report endpoint (JSON stats).")
 	fmt.Println("                 Unset disables it (404). When set, present it as a bearer token or ?key=. The")
 	fmt.Println("                 public /.tps/beacon (JS-execution signal) is unaffected. Route /.tps/ to TPS in")
@@ -195,12 +180,11 @@ func serve() {
 	var server = NewServer(router, store).
 		SetSecretKey(turnstileSecretKey).
 		SetSiteKey(turnstileSiteKey).
-		SetProxyTargets(proxyTargets).
+		SetProxyTarget(proxyTarget).
 		SetJWTSigningKey(jwtSigningKey).
 		SetTokenLifetime(tokenLifetime).
 		SetClientBinding(tokenBindUserAgent).
 		SetRequestBudget(tokenRequestBudget, tokenIPSwitchCost).
-		SetChallengeNavigationOnly(challengeNavigationOnly).
 		SetAdminSecret(adminSecret).
 		SetLogger(logger.With("log.source", "main.Server"))
 
