@@ -411,7 +411,7 @@ func (s *Server) LoadCoreTemplates(pattern string, fsys fs.FS) {
 	var from string
 	var af afero.Fs
 	if gin.Mode() == gin.ReleaseMode {
-		af = afero.FromIOFS{fsys}
+		af = afero.FromIOFS{FS: fsys}
 		pattern = "*.go.html"
 		from = "io/fs.FS"
 	} else {
