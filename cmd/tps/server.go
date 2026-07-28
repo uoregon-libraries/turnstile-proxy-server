@@ -589,6 +589,22 @@ func (s *Server) handleProxy(c *gin.Context) {
 		s.logger.Debug("No JWT, presenting challenge")
 	}
 
+	// Everything from here on either verifies a challenge or caches the
+	// request so it can be replayed after one, and both need the body in
+	// memory. Read it once now and hand the rest of the handler a fresh reader
+	// over the same bytes: the form lookups below drain c.Request.Body, so
+	// without this a challenged form POST (urlencoded or multipart) is cached
+	// with an empty body and replayed to the backend with the user's data
+	// gone. The valid-token path above returns before we get here, so ordinary
+	// proxied traffic still streams rather than being buffered.
+	var body, readErr = io.ReadAll(c.Request.Body)
+	if readErr != nil {
+		s.logger.Error("Could not read original request body", "error", readErr)
+		c.String(http.StatusInternalServerError, "Could not buffer request")
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
 	// Not a valid session, check if this is a verification attempt
 	s.logger.Debug("handleProxy: checking request for turnstile POST")
 	var turnstileResponse = c.PostForm("cf-turnstile-response")
@@ -634,12 +650,6 @@ func (s *Server) handleProxy(c *gin.Context) {
 	// This is a new request, cache it and serve the challenge
 	s.logger.Debug("handleProxy: new request, presenting challenge")
 	var newRequestID = requestid.New()
-	var body, readErr = io.ReadAll(c.Request.Body)
-	if readErr != nil {
-		s.logger.Error("Could not read original request body", "error", readErr)
-		c.String(http.StatusInternalServerError, "Could not buffer request")
-		return
-	}
 	var cachedReq = &cachedRequest{
 		Method:  c.Request.Method,
 		Body:    body,

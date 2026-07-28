@@ -34,6 +34,17 @@ https://{$SITE_HOST:localhost} {
   #
   # This example deliberately routes static files through TPS anyway, to
   # demonstrate that protecting them is possible when it's intentional.
+  # TPS's own endpoints have to reach TPS, never the app -- they live under a
+  # reserved prefix precisely so this route is safe to add. /.tps/beacon is how
+  # a challenge page reports that its JavaScript ran, which is the "rendered"
+  # column in /.tps/report; without this route that signal reads zero forever.
+  # /.tps/report itself needs ADMIN_SECRET, which this example leaves unset, so
+  # it 404s until you set one. See "Exposing /.tps/" in the README for how to
+  # lock the report endpoint down beyond the secret.
+  handle /.tps/* {
+    reverse_proxy tps:8080
+  }
+
   @protected {
     path /protected/* /static-protected/*
   }

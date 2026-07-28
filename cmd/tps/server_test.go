@@ -404,6 +404,60 @@ func TestChallengesEveryRequestKind(t *testing.T) {
 	}
 }
 
+// TestChallengedPostKeepsItsBody covers the body a user is about to lose: the
+// handler asks gin for the Turnstile form fields before it caches the original
+// request, and gin's form helpers drain the body to answer. If the body isn't
+// buffered first, a challenged form submission is cached empty and replayed to
+// the backend with the user's data gone.
+func TestChallengedPostKeepsItsBody(t *testing.T) {
+	var multipartBody = "--XX\r\nContent-Disposition: form-data; name=\"q\"\r\n\r\nrye bread\r\n--XX--\r\n"
+
+	var tests = []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{"urlencoded", "application/x-www-form-urlencoded", "q=rye+bread&page=2"},
+		{"multipart", "multipart/form-data; boundary=XX", multipartBody},
+		{"json", "application/json", `{"q":"rye bread"}`},
+		{"no content type", "", "plain old bytes"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+			defer backend.Close()
+			s := newTestServer(t, backend.URL)
+
+			req := httptest.NewRequest("POST", "/search", strings.NewReader(tc.body))
+			if tc.contentType != "" {
+				req.Header.Set("Content-Type", tc.contentType)
+			}
+			w := httptest.NewRecorder()
+			s.r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("got status %d, want %d (challenge)", w.Code, http.StatusForbidden)
+			}
+
+			var cached []*cachedRequest
+			for _, item := range s.requestCache.Items() {
+				cached = append(cached, item.Object.(*cachedRequest))
+			}
+			if len(cached) != 1 {
+				t.Fatalf("got %d cached requests, want 1", len(cached))
+			}
+			if got := string(cached[0].Body); got != tc.body {
+				t.Errorf("cached body = %q (%d bytes), want %q (%d bytes)",
+					got, len(got), tc.body, len(tc.body))
+			}
+			if cached[0].Method != http.MethodPost {
+				t.Errorf("cached method = %q, want POST", cached[0].Method)
+			}
+		})
+	}
+}
+
 func TestTokenMatchesClient(t *testing.T) {
 	s := &Server{
 		logger:        slog.Default(),
