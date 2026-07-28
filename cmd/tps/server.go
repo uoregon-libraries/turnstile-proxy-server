@@ -25,7 +25,6 @@ import (
 	"turnstile-proxy-server/internal/db"
 	"turnstile-proxy-server/internal/requestid"
 
-	"github.com/gin-contrib/multitemplate"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/patrickmn/go-cache"
@@ -85,7 +84,7 @@ type cloudflareVerifyResponse struct {
 // proxying successful requests
 type Server struct {
 	r             *gin.Engine
-	render        multitemplate.Renderer
+	render        *templateStore
 	logger        *slog.Logger
 	db            db.Store
 	siteKey       string
@@ -111,7 +110,9 @@ type Server struct {
 func NewServer(router *gin.Engine, store db.Store) *Server {
 	var requestCache = cache.New(5*time.Minute, 10*time.Minute)
 
-	var render = multitemplate.NewRenderer()
+	// Templates hot-reload in debug mode, exactly as they would under Gin's
+	// own renderers, and are parsed once in release mode
+	var render = newTemplateStore(slog.Default(), gin.IsDebugging())
 
 	router.HTMLRender = render
 	var err = router.SetTrustedProxies(trustedProxyCIDRs)
@@ -142,6 +143,7 @@ func NewServer(router *gin.Engine, store db.Store) *Server {
 // SetLogger sets the logger and returns s for chaining
 func (s *Server) SetLogger(l *slog.Logger) *Server {
 	s.logger = l
+	s.render.logger = l
 	return s
 }
 
@@ -386,7 +388,11 @@ func (s *Server) LoadCoreTemplates(pattern string, fsys fs.FS) {
 		if strings.HasSuffix(pth, ".go.html") {
 			var name = "core/" + strings.Replace(filepath.Base(pth), ".go.html", "", 1)
 			s.logger.Debug("Adding core template", "name", name, "path", pth)
-			s.render.AddFromFS(name, afero.NewIOFS(af), pth)
+			var addErr = s.render.addFile(name, af, pth)
+			if addErr != nil {
+				s.logger.Error("Cannot load core template", "from", from, "path", pth, "error", addErr)
+				panic("Fatal error, cannot continue without templates")
+			}
 			s.templates[name] = pth
 		}
 	}
@@ -401,6 +407,7 @@ func (s *Server) LoadCustomTemplates(templatePath string) {
 	if templatePath == "" {
 		return
 	}
+	templatePath = filepath.Clean(templatePath)
 
 	var err = filepath.Walk(templatePath, func(pth string, info fs.FileInfo, err error) error {
 		if err != nil {
@@ -412,10 +419,20 @@ func (s *Server) LoadCustomTemplates(templatePath string) {
 		}
 
 		if strings.HasSuffix(pth, ".go.html") {
-			var name = strings.Replace(pth, templatePath+"/", "", 1)
-			name = strings.Replace(name, ".go.html", "", 1)
+			var name, relErr = filepath.Rel(templatePath, pth)
+			if relErr != nil {
+				s.logger.Error("Cannot name custom template, skipping it", "path", pth, "error", relErr)
+				return nil
+			}
+			name = strings.TrimSuffix(name, ".go.html")
 			s.logger.Debug("Adding custom template", "name", name, "path", pth)
-			s.render.AddFromFiles(name, pth)
+			var addErr = s.render.addFile(name, afero.NewOsFs(), pth)
+			if addErr != nil {
+				// One bad custom template shouldn't cost us the rest of them;
+				// the core templates can cover the paths it would have
+				s.logger.Error("Cannot load custom template, skipping it", "path", pth, "error", addErr)
+				return nil
+			}
 			s.templates[name] = pth
 		}
 		return err
@@ -472,6 +489,12 @@ func (s *Server) Run(addr string) error {
 	}
 }
 
+// getTemplate picks the template to render for this request, most specific
+// first: <hostname>/<path>/<shortname> narrowing a path segment at a time,
+// then <hostname>/<shortname>, then a top-level <shortname> covering every
+// host, and finally the core template built into TPS. Most sites only ever
+// need that top-level pair, so it costs nothing to have the per-host and
+// per-path layers available for the sites that do.
 func (s *Server) getTemplate(r *http.Request, shortname string) string {
 	var host = r.Host
 	var path = r.URL.Path
@@ -498,6 +521,11 @@ func (s *Server) getTemplate(r *http.Request, shortname string) string {
 			s.logger.Debug("Found custom template", "name", name)
 			return name
 		}
+	}
+
+	if s.templates[shortname] != "" {
+		s.logger.Debug("Found site-wide custom template", "name", shortname)
+		return shortname
 	}
 
 	s.logger.Debug("No custom template found, returning default")

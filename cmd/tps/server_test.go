@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -311,7 +313,9 @@ func newTestServerWithStore(t *testing.T, backendURL string, store db.Store) *Se
 	s := NewServer(gin.New(), store).
 		SetJWTSigningKey("test-key").
 		SetProxyTarget(backendURL)
-	s.render.AddFromString("core/challenge", "challenge page {{.RequestID}}")
+	if err := s.render.addString("core/challenge", "challenge page {{.RequestID}}"); err != nil {
+		t.Fatalf("registering stub challenge template: %v", err)
+	}
 	return s
 }
 
@@ -502,5 +506,127 @@ func TestIssueTokenRedirectsForGet(t *testing.T) {
 	}
 	if rec.Header().Get("Set-Cookie") == "" {
 		t.Error("expected a session cookie to be set before redirecting")
+	}
+}
+
+// writeCustomTemplates builds a template directory from a map of relative
+// path (minus the .go.html suffix) to file content, and returns its root
+func writeCustomTemplates(t *testing.T, files map[string]string) string {
+	t.Helper()
+	var root = t.TempDir()
+	for name, content := range files {
+		var path = filepath.Join(root, name+".go.html")
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatalf("making template dir for %q: %v", name, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatalf("writing template %q: %v", name, err)
+		}
+	}
+	return root
+}
+
+// TestGetTemplateResolution covers the whole lookup order: a path-specific
+// template beats a host-specific one, which beats a single top-level pair
+// covering every host, which beats the templates built into TPS.
+func TestGetTemplateResolution(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := NewServer(gin.New(), db.NewNoopStore()).SetJWTSigningKey("test-key")
+	s.LoadCustomTemplates(writeCustomTemplates(t, map[string]string{
+		"challenge":                       "site-wide challenge",
+		"failed":                          "site-wide failure",
+		"example.test/challenge":          "host challenge",
+		"example.test/search/challenge":   "path challenge",
+		"example.test/search/deep/failed": "deep failure",
+	}))
+
+	var tests = []struct {
+		name      string
+		host      string
+		path      string
+		shortname string
+		want      string
+	}{
+		{"path beats host", "example.test", "/search", "challenge", "example.test/search/challenge"},
+		{"path match covers deeper paths", "example.test", "/search/results/2", "challenge", "example.test/search/challenge"},
+		{"host beats site-wide", "example.test", "/elsewhere", "challenge", "example.test/challenge"},
+		{"site-wide covers an unknown host", "other.test", "/search", "challenge", "challenge"},
+		{"deep path failure page", "example.test", "/search/deep", "failed", "example.test/search/deep/failed"},
+		{"site-wide failure page where the host has none", "example.test", "/search", "failed", "failed"},
+		{"core template when nothing custom exists", "other.test", "/x", "nosuchpage", "core/nosuchpage"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Host = tc.host
+			if got := s.getTemplate(req, tc.shortname); got != tc.want {
+				t.Errorf("getTemplate(%q, %q) = %q, want %q", tc.host+tc.path, tc.shortname, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGetTemplateWithoutSiteWide makes sure the per-host templates still fall
+// through to the core ones when there's no top-level pair to catch them.
+func TestGetTemplateWithoutSiteWide(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := NewServer(gin.New(), db.NewNoopStore()).SetJWTSigningKey("test-key")
+	s.LoadCustomTemplates(writeCustomTemplates(t, map[string]string{
+		"example.test/challenge": "host challenge",
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/search", nil)
+	req.Host = "other.test"
+	if got := s.getTemplate(req, "challenge"); got != "core/challenge" {
+		t.Errorf("getTemplate = %q, want core/challenge", got)
+	}
+}
+
+// TestSiteWideTemplateIsServed is the end-to-end version: drop one
+// challenge.go.html at the top of TEMPLATE_PATH and every host gets it.
+func TestSiteWideTemplateIsServed(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer backend.Close()
+
+	gin.SetMode(gin.TestMode)
+	s := NewServer(gin.New(), db.NewNoopStore()).
+		SetJWTSigningKey("test-key").
+		SetProxyTarget(backend.URL)
+	s.LoadCustomTemplates(writeCustomTemplates(t, map[string]string{
+		"challenge": "<body><h1>one template for everything</h1><challenge-form></challenge-form></body>",
+	}))
+
+	for _, host := range []string{"example.test", "other.test:8080"} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+		req.Host = host
+		s.r.ServeHTTP(w, req)
+
+		body := w.Body.String()
+		if !strings.Contains(body, "one template for everything") {
+			t.Errorf("host %q did not get the site-wide template:\n%s", host, body)
+		}
+		if !strings.Contains(body, `id="tps-challenge-form"`) {
+			t.Errorf("host %q got an unexpanded challenge page:\n%s", host, body)
+		}
+	}
+}
+
+// TestLoadCustomTemplatesTrailingSlash guards a path-handling detail that's
+// easy to break: TEMPLATE_PATH with a trailing slash has to name templates
+// the same way as one without.
+func TestLoadCustomTemplatesTrailingSlash(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := NewServer(gin.New(), db.NewNoopStore()).SetJWTSigningKey("test-key")
+	s.LoadCustomTemplates(writeCustomTemplates(t, map[string]string{
+		"challenge":              "site-wide",
+		"example.test/challenge": "host",
+	}) + "/")
+
+	for _, want := range []string{"challenge", "example.test/challenge"} {
+		if s.templates[want] == "" {
+			t.Errorf("template %q was not registered; got %v", want, s.templates)
+		}
 	}
 }

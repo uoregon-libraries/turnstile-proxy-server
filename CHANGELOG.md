@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A `challenge.go.html` / `failed.go.html` pair at the top of `TEMPLATE_PATH`
+  now replaces the built-in pages for every request.** Most sites turn out to
+  want one custom look, not one per host, and previously the only way to get
+  that was a `<hostname>/` directory per site you served. The per-host and
+  per-path directories still work and still win when they match: TPS looks for
+  the deepest matching path, then the hostname, then your top-level pair, then
+  its own built-in page. Challenge and failure pages are looked up separately,
+  so a site-specific challenge page can sit alongside a shared failure page.
+- **Custom challenge templates can just say `<challenge-form></challenge-form>`
+  where the widget goes.** TPS expands that placeholder when it loads the
+  template, filling in the Turnstile form, the `request_id` field, the script
+  that submits the form when the widget succeeds, and the `/.tps/beacon` ping.
+  It also adds Cloudflare's `api.js` to the end of your `<head>` (or the top of
+  your `<body>` if there's no head), unless your template already loads it.
+  Attributes on the element are preserved, so it's still yours to style, and
+  anything inside it — a `<noscript>` note, say — is kept after the form.
+- The core challenge template now uses the placeholder itself, so the default
+  page and custom pages go through the same code.
+
+### Changed
+
+- **A custom template that doesn't compile is now skipped, with an error in the
+  log, instead of taking TPS down at startup.** The core template covers the
+  paths it would have served. An unreadable or unparseable *core* template is
+  still fatal, because there'd be nothing left to render.
+- TPS renders HTML through its own small template store now
+  (`cmd/tps/render.go`) rather than `gin-contrib/multitemplate`, since the
+  `<challenge-form>` expansion has to happen on template source before it's
+  parsed. Debug mode still re-reads, re-expands, and re-parses templates on
+  every render, so editing a challenge page and hitting refresh works exactly
+  as it did; release mode still parses once at startup from the embedded copy.
+  If a template stops parsing mid-edit, the last version that worked keeps
+  being served until the file is fixed.
+
+### Notes
+
+- **Nothing breaks.** A challenge template with no `<challenge-form>` element
+  is left exactly as-is, so hand-written challenge markup keeps working. The
+  failure page is untouched either way.
+- The generated form's id is `tps-challenge-form` and its success callback is
+  named `tpsChallengeSolved`; don't reuse those names in a custom template.
+- Two or more placeholders in one template means two Turnstile widgets and two
+  forms sharing an id. TPS expands them all and logs a warning at startup.
+
 ## v3.0.0
 
 This release takes features *away*. Both of them were TPS doing a reverse
