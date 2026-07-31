@@ -1,17 +1,27 @@
 # Changelog
 
-## Unreleased
+## v3.0.0
+
+This release improves custom templates, fixes some bugs, and also *takes
+features away*, so read the "Breaking changes" section carefully!
+
+Both removed features were TPS doing a reverse proxy's job and never should
+have been here: use Caddy instead (or nginx or whatever).
 
 ### Added
 
 - **A `challenge.go.html` / `failed.go.html` pair at the top of `TEMPLATE_PATH`
-  now replaces the built-in pages for every request.** Most sites turn out to
-  want one custom look, not one per host, and previously the only way to get
-  that was a `<hostname>/` directory per site you served. The per-host and
-  per-path directories still work and still win when they match: TPS looks for
-  the deepest matching path, then the hostname, then your top-level pair, then
-  its own built-in page. Challenge and failure pages are looked up separately,
-  so a site-specific challenge page can sit alongside a shared failure page.
+  now replaces the built-in pages for every request.** Most servers only need
+  one custom look, and don't serve multiple hosts anymore. Previously the only way to get
+  that was a `<hostname>/` directory per site you served.
+  - You don't have to fix anything. The per-host and per-path directories still
+    work and still win when they match: TPS looks for the deepest matching
+    path, then the hostname, then your top-level pair, then its own built-in
+    page. Challenge and failure pages are looked up separately, so a
+    site-specific challenge page can sit alongside a shared failure page.
+
+### Changed
+
 - **Custom challenge templates can just say `<challenge-form></challenge-form>`
   where the widget goes.** TPS expands that placeholder when it loads the
   template, filling in the Turnstile form, the `request_id` field, the script
@@ -20,59 +30,46 @@
   your `<body>` if there's no head), unless your template already loads it.
   Attributes on the element are preserved, so it's still yours to style, and
   anything inside it — a `<noscript>` note, say — is kept after the form.
-- The core challenge template now uses the placeholder itself, so the default
-  page and custom pages go through the same code.
-
-### Changed
-
+  - **Nothing breaks.** A challenge template with no `<challenge-form>` element
+    is left exactly as-is, so hand-written challenge markup keeps working. The
+    failure page is untouched either way.
+  - The generated form's id is `tps-challenge-form` and its success callback is
+    named `tpsChallengeSolved`; don't reuse those names in a custom template.
+  - Two or more placeholders in one template means two Turnstile widgets and two
+    forms sharing an id. TPS expands them all and logs a warning at startup.
+  - The core challenge template now uses the placeholder itself, so the default
+    page and custom pages go through the same code.
 - **A custom template that doesn't compile is now skipped, with an error in the
   log, instead of taking TPS down at startup.** The core template covers the
   paths it would have served. An unreadable or unparseable *core* template is
   still fatal, because there'd be nothing left to render.
-- TPS renders HTML through its own small template store now
-  (`cmd/tps/render.go`) rather than `gin-contrib/multitemplate`, since the
-  `<challenge-form>` expansion has to happen on template source before it's
-  parsed. Debug mode still re-reads, re-expands, and re-parses templates on
-  every render, so editing a challenge page and hitting refresh works exactly
-  as it did; release mode still parses once at startup from the embedded copy.
-  If a template stops parsing mid-edit, the last version that worked keeps
-  being served until the file is fixed.
 
-### Notes
+### Fixed
 
-- **Nothing breaks.** A challenge template with no `<challenge-form>` element
-  is left exactly as-is, so hand-written challenge markup keeps working. The
-  failure page is untouched either way.
-- The generated form's id is `tps-challenge-form` and its success callback is
-  named `tpsChallengeSolved`; don't reuse those names in a custom template.
-- Two or more placeholders in one template means two Turnstile widgets and two
-  forms sharing an id. TPS expands them all and logs a warning at startup.
-
-## v3.0.0
-
-This release takes features *away*. Both of them were TPS doing a reverse
-proxy's job, badly: picking a backend by path, and deciding which requests
-deserve a challenge. Caddy (or nginx, or whatever you already run in front of
-TPS) does both better, and TPS is smaller and easier to reason about without
-them. TPS now has one backend and challenges everything you route to it.
+- **A challenged form submission no longer loses its body.** Oops. This has
+  been a bug for a while now.
+- **The example stack routes `/.tps/` to TPS.** `example/caddy/Caddyfile` sent
+  everything outside the two protected prefixes straight to the app, so the
+  challenge page's beacon ping never reached TPS and the example's `rendered`
+  counts read zero forever.
 
 ### Breaking changes
 
 - **`PROXY_TARGETS` is removed; `PROXY_TARGET` is the only way to set a
   backend.** It takes a single URL (scheme and host required) and every
-  verified request goes there. Need more than one backend? Run one TPS per
-  backend, or point `PROXY_TARGET` at an internal listener on your front proxy
-  and let it route — `example/` now demonstrates the latter.
+  verified request goes there. If you need multiple backends:
+  - Run one TPS per backend, they're cheap!
+  - Point `PROXY_TARGET` at an internal listener that handles routing. This is
+    demonstrated in the example app.
 - **`CHALLENGE_MODE` is removed.** Every request routed to TPS that lacks a
   valid token is challenged. To challenge only top-level navigations, match on
   `Sec-Fetch-Mode` in your front proxy and route only those requests to TPS;
   see "Single-Page Apps" in the README for the Caddy snippet.
-- **TPS refuses to start while either variable is set**, with a message
-  pointing at the replacement, rather than quietly behaving differently than
-  your config asks for. Unset them once you've migrated.
+- **TPS refuses to start if you use either of the above deprecated variables**,
+  with a message pointing at the replacement. Migrate and unset these.
 - **The `nav_skip` event outcome is gone**, since nothing produces it anymore.
   Existing `nav_skip` rows in an event log are harmless and reports were never
-  built on them.
+  built on them. Unless you used sqlite to manually monitor, you won't care.
 
 ### Upgrade notes
 

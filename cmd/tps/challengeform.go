@@ -43,11 +43,24 @@ const challengeFormMarkup = `
 `
 
 var (
-	// challengeFormRE matches a <challenge-form> placeholder: its opening tag,
-	// its attributes, and an immediately following closing tag if there is one.
-	// Anything else between the tags is left alone, so a template can keep
-	// fallback content (a <noscript> block, say) inside the element.
-	challengeFormRE = regexp.MustCompile(`(?is)<challenge-form\b([^>]*)>(\s*</challenge-form\s*>)?`)
+	// challengeFormRE matches a <challenge-form> placeholder as a whole
+	// element. The first branch is the self-closing form, which has no closing
+	// tag to look for; the second is the ordinary one, whose closing tag and
+	// everything before it are captured so fallback content (a <noscript>
+	// block, say) can be put back inside the element we write out. The inner
+	// capture is non-greedy so the nearest closing tag wins.
+	//
+	// Submatches: 1 = self-closing attributes, 2 = attributes, 3 = fallback
+	// content. Only one of 1 and 2 is ever set, so callers can concatenate
+	// them to get the attributes regardless of which branch matched.
+	challengeFormRE = regexp.MustCompile(`(?is)<challenge-form\b([^>]*?)/\s*>` +
+		`|<challenge-form\b([^>]*)>(?:(.*?)</challenge-form\s*>)?`)
+
+	// scriptTagRE matches a <script ...> opening tag. Finding the Turnstile
+	// URL inside one of these is how we tell a template that really loads
+	// api.js from one that only mentions the URL somewhere it does nothing —
+	// a CSP <meta> tag, say, or a comment.
+	scriptTagRE = regexp.MustCompile(`(?is)<script\b[^>]*>`)
 
 	headCloseRE = regexp.MustCompile(`(?i)</head\s*>`)
 	bodyOpenRE  = regexp.MustCompile(`(?i)<body\b[^>]*>`)
@@ -66,17 +79,22 @@ func expandChallengeMarkup(src string) (string, int) {
 	}
 
 	var out = challengeFormRE.ReplaceAllStringFunc(src, func(match string) string {
-		var attrs = challengeFormRE.FindStringSubmatch(match)[1]
+		var m = challengeFormRE.FindStringSubmatch(match)
 
-		// Drop the slash of a self-closing <challenge-form />; we always write
-		// an explicit closing tag. The rest of the attributes are preserved so
-		// the element stays styleable (`challenge-form { ... }` or a class).
-		attrs = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(attrs), "/"))
+		// Only one of the two attribute captures is ever set, so joining them
+		// works whichever branch matched. Attributes are preserved so the
+		// element stays styleable (`challenge-form { ... }` or a class); we
+		// always write an explicit closing tag, so a self-closing placeholder
+		// loses nothing but its slash.
+		var attrs = strings.TrimSpace(m[1] + m[2])
 		if attrs != "" {
 			attrs = " " + attrs
 		}
 
-		return "<challenge-form" + attrs + ">" + challengeFormMarkup + "</challenge-form>"
+		// The author's fallback content goes back inside the element, after
+		// the generated form, so CSS that scopes to `challenge-form` still
+		// reaches it and the document stays well-formed.
+		return "<challenge-form" + attrs + ">" + challengeFormMarkup + m[3] + "</challenge-form>"
 	})
 
 	return injectTurnstileScript(out), found
@@ -88,7 +106,7 @@ func expandChallengeMarkup(src string) (string, int) {
 // that already loads api.js is left alone: loading it twice makes Turnstile
 // render every widget on the page twice.
 func injectTurnstileScript(src string) string {
-	if strings.Contains(src, turnstileAPISrc) {
+	if loadsTurnstileScript(src) {
 		return src
 	}
 
@@ -103,6 +121,20 @@ func injectTurnstileScript(src string) string {
 	}
 
 	return src
+}
+
+// loadsTurnstileScript reports whether src already pulls in Cloudflare's
+// api.js. It only counts the URL when it appears inside a <script> tag: a
+// template that names the URL in a CSP <meta> tag or a comment isn't loading
+// anything, and treating that as "the author has it covered" would leave the
+// page with a widget that never renders.
+func loadsTurnstileScript(src string) bool {
+	for _, tag := range scriptTagRE.FindAllString(src, -1) {
+		if strings.Contains(tag, turnstileAPISrc) {
+			return true
+		}
+	}
+	return false
 }
 
 // insertBefore splices snippet into src at idx, repeating whatever indentation

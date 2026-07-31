@@ -91,6 +91,21 @@ func TestExpandChallengeMarkupVariants(t *testing.T) {
 			wantContain: []string{`<noscript>JS required</noscript>`, `id="tps-challenge-form"`},
 		},
 		{
+			name:        "an incidental mention of api.js is not a script tag",
+			src:         `<head><meta http-equiv="Content-Security-Policy" content="script-src ` + turnstileAPISrc + `"></head><body><challenge-form></challenge-form></body>`,
+			wantCount:   1,
+			wantContain: []string{turnstileScriptTag},
+		},
+		{
+			// Written with a different attribute order than turnstileScriptTag
+			// so "absent" really means "TPS did not add its own copy"
+			name:        "a script tag that loads api.js suppresses injection",
+			src:         `<head><script defer src="` + turnstileAPISrc + `"></script></head><body><challenge-form></challenge-form></body>`,
+			wantCount:   1,
+			wantContain: []string{`id="tps-challenge-form"`},
+			wantAbsent:  []string{turnstileScriptTag},
+		},
+		{
 			name:        "mixed case tag",
 			src:         `<HEAD></HEAD><body><CHALLENGE-FORM></CHALLENGE-FORM></body>`,
 			wantCount:   1,
@@ -124,6 +139,51 @@ func TestExpandChallengeMarkupVariants(t *testing.T) {
 			for _, unwanted := range tc.wantAbsent {
 				if strings.Contains(got, unwanted) {
 					t.Errorf("output unexpectedly contains %q:\n%s", unwanted, got)
+				}
+			}
+		})
+	}
+}
+
+// TestExpandChallengeMarkupKeepsElementWellFormed pins the shape of the
+// expanded element, not just its contents. The Contains-style assertions above
+// can't tell "fallback content is inside the element" from "fallback content
+// spilled out after it, next to an orphaned closing tag", which is exactly
+// what a placeholder with fallback markup used to produce.
+func TestExpandChallengeMarkupKeepsElementWellFormed(t *testing.T) {
+	var tests = []struct {
+		name string
+		src  string
+	}{
+		{"empty", `<head></head><body><challenge-form></challenge-form></body>`},
+		{"self-closing", `<head></head><body><challenge-form /></body>`},
+		{"with attributes", `<head></head><body><challenge-form class="box"></challenge-form></body>`},
+		{"with fallback content", `<head></head><body><challenge-form><noscript>JS required</noscript></challenge-form></body>`},
+		{"attributes and fallback", `<head></head><body><challenge-form id="cf"><p>Need JS</p></challenge-form></body>`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got, _ = expandChallengeMarkup(tc.src)
+
+			var opens = strings.Count(got, "<challenge-form")
+			var closes = strings.Count(got, "</challenge-form>")
+			if opens != 1 || closes != 1 {
+				t.Errorf("element is not balanced: %d opening tags, %d closing tags:\n%s", opens, closes, got)
+			}
+
+			// The generated form has to sit between the tags, and so does
+			// whatever the author left inside the placeholder
+			var openIdx = strings.Index(got, "<challenge-form")
+			var start = openIdx + strings.Index(got[openIdx:], ">")
+			var end = strings.Index(got, "</challenge-form>")
+			var inner = got[start:end]
+			if !strings.Contains(inner, `id="tps-challenge-form"`) {
+				t.Errorf("generated form is not inside the element:\n%s", got)
+			}
+			for _, fallback := range []string{"<noscript>JS required</noscript>", "<p>Need JS</p>"} {
+				if strings.Contains(tc.src, fallback) && !strings.Contains(inner, fallback) {
+					t.Errorf("fallback %q escaped the element:\n%s", fallback, got)
 				}
 			}
 		})
