@@ -23,6 +23,7 @@ const (
 	OutcomeChallengeRendered = "challenge_rendered" // a served challenge page's JS executed (beacon)
 	OutcomeVerifyOK          = "verify_ok"          // a challenge solution verified successfully
 	OutcomeVerifyFail        = "verify_fail"        // a challenge solution failed verification
+	OutcomeVerifyError       = "verify_error"       // Cloudflare accepted the solution but TPS couldn't finish
 )
 
 // Reason gives more detail about an outcome (why a challenge was served, or how
@@ -35,6 +36,7 @@ const (
 	ReasonBudgetExhausted = "budget_exhausted" // challenged: token's request budget is spent
 	ReasonValidToken      = "valid_token"      // proxied: a live token authorized the request
 	ReasonVerifiedReplay  = "verified_replay"  // proxied/verify_ok: replay after solving a challenge
+	ReasonReplayFailed    = "replay_failed"    // verify_error: the solution was good, the replay wasn't
 )
 
 // Event is a single proxy decision to be recorded.

@@ -19,6 +19,14 @@ a.k.a., the "don't default to a stupidly big log database" release
 - A solved challenge's cached request is now dropped as soon as it's replayed,
   saving RAM and removing a replay risk. Very few bots ever solve a challenge,
   though, so in practice this is a very minor improvement.
+- A solved challenge is only counted as solved once the client is actually
+  served. If Cloudflare accepted the solution but TPS then couldn't finish (the
+  cached request had expired, say), the event was still logged as `verify_ok`,
+  so the stats claimed a success the visitor never saw. Those now log a new
+  `verify_error` outcome with reason `replay_failed`, which keeps them out of
+  the `verify_fail` count too — that one means the *client* failed, and is the
+  bot signal, so our own errors don't belong in it. Reports are unchanged;
+  `verify_error` shows up when you query the event log directly.
 - Secrets are no longer written to the log. `JWT_SIGNING_KEY` and
   `TURNSTILE_SECRET_KEY` were logged in plaintext when loaded from an
   `-env-file`, and again at debug level on startup; both now show `[redacted]`

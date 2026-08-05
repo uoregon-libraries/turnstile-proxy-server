@@ -35,6 +35,10 @@ import (
 const (
 	cookieName = "tps-jwt"
 
+	// turnstileVerifyURL is Cloudflare's siteverify endpoint, where a solved
+	// challenge is checked before TPS will trust it.
+	turnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
 	// maskBitsIPv4 / maskBitsIPv6 are how many leading bits of a client IP
 	// matter when tracking the client: the exact address for IPv4, and the
 	// typical single-customer delegation for IPv6 so privacy-extension
@@ -108,11 +112,14 @@ type Server struct {
 	requestBudget int
 	ipSwitchCost  int
 	adminSecret   string
-	budgetMutex   sync.Mutex
-	budgetCache   *cache.Cache
-	requestCache  *cache.Cache
-	proxyTarget   *url.URL
-	templates     map[string]string
+	// verifyURL is Cloudflare's siteverify endpoint. It's a field only so tests
+	// can point it at a stub; nothing in the config changes it.
+	verifyURL    string
+	budgetMutex  sync.Mutex
+	budgetCache  *cache.Cache
+	requestCache *cache.Cache
+	proxyTarget  *url.URL
+	templates    map[string]string
 
 	maxChallengeBody  int64
 	maxChallengeCache int64
@@ -152,6 +159,7 @@ func NewServer(router *gin.Engine, store db.Store) *Server {
 		logger:        slog.Default(),
 		siteKey:       "1x00000000000000000000AA",
 		secretKey:     "1x0000000000000000000000000000000AA",
+		verifyURL:     turnstileVerifyURL,
 		tokenLifetime: time.Hour,
 		bindUserAgent: true,
 		requestBudget: 1000,
@@ -729,9 +737,8 @@ func (s *Server) handleProxy(c *gin.Context) {
 	if c.Request.Method == "POST" && turnstileResponse != "" && requestID != "" {
 		s.logger.Debug("Received turnstile response, attempting verification", "requestID", requestID)
 
-		var verifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 		var client = &http.Client{Timeout: 10 * time.Second}
-		var resp, err = client.PostForm(verifyURL, url.Values{"secret": {s.secretKey}, "response": {turnstileResponse}})
+		var resp, err = client.PostForm(s.verifyURL, url.Values{"secret": {s.secretKey}, "response": {turnstileResponse}})
 		if err != nil {
 			s.logger.Error("Failed to POST to Cloudflare", "error", err)
 			c.String(http.StatusInternalServerError, "Failed to verify token")
@@ -749,11 +756,19 @@ func (s *Server) handleProxy(c *gin.Context) {
 
 		if verifyResp.Success {
 			s.logger.Debug("Turnstile verification successful")
+			// Build the event before the replay (which consumes the request) but
+			// log it after: "solved" should mean the client actually got through,
+			// and a replay that dies on our side is not the client succeeding.
+			// It isn't the client failing either, so it gets its own outcome
+			// rather than polluting the verify_fail count with our bugs.
 			var e = s.baseEvent(c)
 			e.Outcome = db.OutcomeVerifyOK
 			e.Reason = db.ReasonVerifiedReplay
+			if !s.issueTokenAndReplay(c, requestID) {
+				e.Outcome = db.OutcomeVerifyError
+				e.Reason = db.ReasonReplayFailed
+			}
 			s.db.LogEvent(e)
-			s.issueTokenAndReplay(c, requestID)
 		} else {
 			s.logger.Warn("Turnstile verification failed", "error-codes", verifyResp.ErrorCodes)
 			var e = s.baseEvent(c)
@@ -845,7 +860,16 @@ func (s *Server) replayRequest(c *gin.Context, req *http.Request) {
 	proxy.ServeHTTP(c.Writer, req)
 }
 
-func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
+// issueTokenAndReplay mints the session cookie for a client that just solved a
+// challenge and delivers the request the challenge interrupted.
+//
+// It reports whether the client was actually served: false means TPS accepted
+// the solution and then couldn't finish (the token wouldn't sign, or the
+// original request was gone), and the client got an error instead of the page
+// they asked for. Only failures TPS can see from here count -- once the request
+// is handed to the reverse proxy, a backend that then falls over is the
+// backend's problem, not a failed challenge.
+func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) bool {
 	var jti = requestid.New()
 	var claimsMap = jwt.MapClaims{
 		"iss": "tps",
@@ -871,7 +895,7 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	if err != nil {
 		s.logger.Error("Failed to sign JWT", "error", err)
 		c.String(http.StatusInternalServerError, "Failed to create session")
-		return
+		return false
 	}
 
 	var secure = c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
@@ -888,7 +912,7 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	if !ok {
 		s.logger.Error("Could not find cached request", "requestID", requestID)
 		c.String(http.StatusInternalServerError, "Could not find original request")
-		return
+		return false
 	}
 
 	// This challenge is spent: the client has a cookie now, and a reload goes
@@ -909,7 +933,7 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	if cachedReq.Method == http.MethodGet {
 		s.logger.Debug("Redirecting to original GET after challenge", "URL", cachedReq.URL.String())
 		c.Redirect(http.StatusSeeOther, cachedReq.URL.String())
-		return
+		return true
 	}
 
 	s.logger.Debug("Replaying request", "Method", cachedReq.Method, "URL", cachedReq.URL)
@@ -918,10 +942,11 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 	if reqErr != nil {
 		s.logger.Error("Could not create new request from cached", "requestID", requestID, "error", reqErr)
 		c.String(http.StatusInternalServerError, "Could not replay original request")
-		return
+		return false
 	}
 	req.Header = stripConditionalHeaders(cachedReq.Headers)
 	s.replayRequest(c, req)
+	return true
 }
 
 // conditionalHeaders are request headers that ask the backend to answer with a

@@ -581,6 +581,73 @@ func TestReplayReleasesCachedRequest(t *testing.T) {
 	}
 }
 
+// solveChallenge drives a full challenge solution through handleProxy against
+// a stubbed Cloudflare that accepts everything, and returns the events logged
+// along the way. requestID is submitted as-is, so a caller can hand over one
+// that was never cached (or has expired) to exercise the failure path.
+func solveChallenge(t *testing.T, s *Server, requestID string) ([]db.Event, *httptest.ResponseRecorder) {
+	t.Helper()
+
+	cloudflare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"success": true}`))
+	}))
+	defer cloudflare.Close()
+	s.verifyURL = cloudflare.URL
+
+	form := url.Values{"cf-turnstile-response": {"solved"}, "request_id": {requestID}}
+	req := httptest.NewRequest("POST", "/protected/data", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	w := httptest.NewRecorder()
+	s.r.ServeHTTP(w, req)
+
+	store, ok := s.db.(*fakeStore)
+	if !ok {
+		t.Fatalf("server's store is %T, not a *fakeStore", s.db)
+	}
+	return store.snapshot(), w
+}
+
+// TestVerifyErrorIsNotCountedAsSolved is the event side of the return value
+// above: when Cloudflare accepts a solution but TPS can't act on it, the
+// request gets its own outcome. It must not inflate the solved count, and it
+// must not land in verify_fail either, which means "the client failed the
+// challenge" and drives the bot signal.
+func TestVerifyErrorIsNotCountedAsSolved(t *testing.T) {
+	t.Run("a replayable request is solved", func(t *testing.T) {
+		s := newTestServerWithStore(t, "http://backend:8080", &fakeStore{})
+		s.requestCache.Set("req-1", &cachedRequest{
+			Method: http.MethodGet, Headers: http.Header{}, URL: &url.URL{Path: "/protected/data"},
+		}, cache.DefaultExpiration)
+
+		events, w := solveChallenge(t, s, "req-1")
+		if len(events) != 1 {
+			t.Fatalf("got %d events, want 1: %+v", len(events), events)
+		}
+		if events[0].Outcome != db.OutcomeVerifyOK {
+			t.Errorf("outcome = %q, want %q", events[0].Outcome, db.OutcomeVerifyOK)
+		}
+		if w.Code != http.StatusSeeOther {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusSeeOther)
+		}
+	})
+
+	t.Run("a solve TPS cannot act on is not solved", func(t *testing.T) {
+		s := newTestServerWithStore(t, "http://backend:8080", &fakeStore{})
+
+		events, _ := solveChallenge(t, s, "never-cached")
+		if len(events) != 1 {
+			t.Fatalf("got %d events, want 1: %+v", len(events), events)
+		}
+		if events[0].Outcome != db.OutcomeVerifyError {
+			t.Errorf("outcome = %q, want %q", events[0].Outcome, db.OutcomeVerifyError)
+		}
+		if events[0].Reason != db.ReasonReplayFailed {
+			t.Errorf("reason = %q, want %q", events[0].Reason, db.ReasonReplayFailed)
+		}
+	})
+}
+
 // TestVerifiedRequestIsNotBodyLimited guards the other side of the body cap:
 // the limit exists to bound what an *unverified* client can allocate, and a
 // request carrying a live token is streamed to the backend rather than
