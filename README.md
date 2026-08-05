@@ -21,8 +21,7 @@ Critical settings you can't just set to defaults:
 - `PROXY_TARGET`: your protected app. Every request TPS verifies is sent here.
   This should be a host+port that is *not* publicly accessible, otherwise bots
   can skip the protection TPS is trying to provide. Give it a scheme and host
-  and nothing else — requests keep their own path when they're forwarded, so a
-  path here would have nothing to apply to, and TPS refuses to start with one.
+  and nothing else (requests keep their own path when they're forwarded).
 - `JWT_SIGNING_KEY`: *must* be set to something bots can't figure out. This
   signs the tokens, and a bot that learns the key can set up fake tokens that
   allow it to bypass TPS entirely. Unlikely, but possible, and really bad if it
@@ -267,13 +266,6 @@ if you hand-wrote your challenge markup, keep the
 `navigator.sendBeacon('/.tps/beacon')` snippet in it, *or you lose this signal
 for those paths*. Okay, not the end of the world, but still a good thing to
 keep in mind!
-
-The same goes for the hidden `original_method` field. TPS only needs it when
-somebody leaves the challenge page open for more than five minutes, at which
-point the request they were making has aged out of the cache — with the field,
-a page view can still be recovered and they never notice, and without it they
-get an "it took too long, try again" message. Templates using
-`<challenge-form>` get it automatically.
 
 [wiki-ui]: <https://github.com/uoregon-libraries/turnstile-proxy-server/wiki/Customize-UI>
 

@@ -18,11 +18,6 @@ JWT_SIGNING_KEY=shhhhhh-this-is-very-secret
 # different backends is your front proxy's job: either route each protected
 # path to its own TPS instance, or point TPS at an internal listener on your
 # front proxy that does the routing (see example/ for the latter).
-#
-# This is a scheme and host only -- no path, query, or credentials. Each request
-# keeps its own path when it's forwarded, so there's nothing for a path here to
-# apply to, and TPS refuses to start rather than ignore one. If your backend
-# expects a prefix ("/base/whatever"), have your front proxy add it.
 PROXY_TARGET="http://localhost"
 
 # Where will you record the stats? TPS logs one decision event per request

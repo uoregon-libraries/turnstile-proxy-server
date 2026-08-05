@@ -20,41 +20,30 @@ a.k.a., the "don't default to a stupidly big log database" release
   saving RAM and removing a replay risk. Very few bots ever solve a challenge,
   though, so in practice this is a very minor improvement.
 - Taking more than five minutes to solve a challenge no longer ends in a 500.
-  The request being made is cached for five minutes, and a slower visitor used
-  to get "Could not find original request" — despite having just been issued a
-  perfectly good cookie. The challenge form now carries the original request
-  method, so an ordinary page view is recovered with a redirect and the visitor
-  never notices. A form submission can't be: its body is what expired, and
-  quietly reissuing it as a page view would drop what they typed, so those get
-  a message saying they're verified and can submit again. Hand-written
-  challenge forms don't send the new field and keep getting the message either
-  way; add `<input type="hidden" name="original_method" value="{{.OriginalMethod}}">`
-  to opt in. `<challenge-form>` templates get it automatically.
-- A solved challenge is only counted as solved once the client is actually
-  served. If Cloudflare accepted the solution but TPS then couldn't finish (the
-  cached request had expired, say), the event was still logged as `verify_ok`,
-  so the stats claimed a success the visitor never saw. Those now log a new
-  `verify_error` outcome (reason `challenge_expired` or `replay_failed`), which keeps them out of
-  the `verify_fail` count too — that one means the *client* failed, and is the
-  bot signal, so our own errors don't belong in it. Reports are unchanged;
-  `verify_error` shows up when you query the event log directly.
-- Secrets are no longer written to the log. `JWT_SIGNING_KEY` and
-  `TURNSTILE_SECRET_KEY` were logged in plaintext when loaded from an
-  `-env-file`, and again at debug level on startup; both now show `[redacted]`
-  (or `[unset]`, so a key that never made it into the environment is still
-  obvious). If you've been running with an env file, treat the keys in your
-  existing logs as exposed and rotate them.
+  The challenge form now carries the original request method, so an ordinary
+  page view is recovered with a redirect and the visitor never notices. A form
+  submission can't be replayed safely, so on expiration users get a message
+  saying to resubmit.
+- Minor fix in how `solved` counts worked
+- Secrets in env vars are no longer written to the log (`JWT_SIGNING_KEY` and
+  `TURNSTILE_SECRET_KEY`)
 
 ### Changed
 
 - `LOG_RETENTION` now defaults to 48 hours instead of 30 days to ensure massive
   traffic isn't running you out of disk space
-- **`PROXY_TARGET` must now be a scheme and host only.** A path on it (e.g.
-  `http://app:8080/base`) was accepted and then ignored — requests went to the
-  backend without the prefix — so it's a startup error now instead of a silent
-  lie. Query strings, fragments, and credentials are refused for the same
-  reason. A bare trailing slash is still fine. If your backend needs a path
-  prefix, add it in your front proxy.
+- `PROXY_TARGET` now gives a useful error if it contains invalid elements (it
+  can only contain a scheme and host). It had been silently ignoring other
+  parts, now it actually lets you know it's invalid. If your backend needs a
+  path prefix, add it in your front proxy.
+
+### Migration
+
+- Hand-written challenge forms need a new input added: `<input type="hidden"
+  name="original_method" value="{{.OriginalMethod}}">`. Use `<challenge-form>`
+  instead of building your own forms unless you have a *really* good reason.
+- If you used `-env-file`, you may have secrets logged in plaintext. Rotate
+  your keys (`JWT_SIGNING_KEY` and `TURNSTILE_SECRET_KEY`) if possible.
 
 ## v3.0.0
 
