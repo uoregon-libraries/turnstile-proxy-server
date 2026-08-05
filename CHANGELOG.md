@@ -19,11 +19,22 @@ a.k.a., the "don't default to a stupidly big log database" release
 - A solved challenge's cached request is now dropped as soon as it's replayed,
   saving RAM and removing a replay risk. Very few bots ever solve a challenge,
   though, so in practice this is a very minor improvement.
+- Taking more than five minutes to solve a challenge no longer ends in a 500.
+  The request being made is cached for five minutes, and a slower visitor used
+  to get "Could not find original request" — despite having just been issued a
+  perfectly good cookie. The challenge form now carries the original request
+  method, so an ordinary page view is recovered with a redirect and the visitor
+  never notices. A form submission can't be: its body is what expired, and
+  quietly reissuing it as a page view would drop what they typed, so those get
+  a message saying they're verified and can submit again. Hand-written
+  challenge forms don't send the new field and keep getting the message either
+  way; add `<input type="hidden" name="original_method" value="{{.OriginalMethod}}">`
+  to opt in. `<challenge-form>` templates get it automatically.
 - A solved challenge is only counted as solved once the client is actually
   served. If Cloudflare accepted the solution but TPS then couldn't finish (the
   cached request had expired, say), the event was still logged as `verify_ok`,
   so the stats claimed a success the visitor never saw. Those now log a new
-  `verify_error` outcome with reason `replay_failed`, which keeps them out of
+  `verify_error` outcome (reason `challenge_expired` or `replay_failed`), which keeps them out of
   the `verify_fail` count too — that one means the *client* failed, and is the
   bot signal, so our own errors don't belong in it. Reports are unchanged;
   `verify_error` shows up when you query the event log directly.

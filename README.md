@@ -268,6 +268,13 @@ if you hand-wrote your challenge markup, keep the
 for those paths*. Okay, not the end of the world, but still a good thing to
 keep in mind!
 
+The same goes for the hidden `original_method` field. TPS only needs it when
+somebody leaves the challenge page open for more than five minutes, at which
+point the request they were making has aged out of the cache — with the field,
+a page view can still be recovered and they never notice, and without it they
+get an "it took too long, try again" message. Templates using
+`<challenge-form>` get it automatically.
+
 [wiki-ui]: <https://github.com/uoregon-libraries/turnstile-proxy-server/wiki/Customize-UI>
 
 ## Single-Page Apps

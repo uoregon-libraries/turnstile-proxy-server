@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 	"turnstile-proxy-server/internal/db"
+	"turnstile-proxy-server/internal/templates"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -585,7 +586,9 @@ func TestReplayReleasesCachedRequest(t *testing.T) {
 // a stubbed Cloudflare that accepts everything, and returns the events logged
 // along the way. requestID is submitted as-is, so a caller can hand over one
 // that was never cached (or has expired) to exercise the failure path.
-func solveChallenge(t *testing.T, s *Server, requestID string) ([]db.Event, *httptest.ResponseRecorder) {
+// originalMethod goes in the form field of the same name; empty leaves it out,
+// standing in for a hand-written challenge form that doesn't send it.
+func solveChallenge(t *testing.T, s *Server, requestID, originalMethod string) ([]db.Event, *httptest.ResponseRecorder) {
 	t.Helper()
 
 	cloudflare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -595,6 +598,9 @@ func solveChallenge(t *testing.T, s *Server, requestID string) ([]db.Event, *htt
 	s.verifyURL = cloudflare.URL
 
 	form := url.Values{"cf-turnstile-response": {"solved"}, "request_id": {requestID}}
+	if originalMethod != "" {
+		form.Set("original_method", originalMethod)
+	}
 	req := httptest.NewRequest("POST", "/protected/data", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
@@ -620,7 +626,7 @@ func TestVerifyErrorIsNotCountedAsSolved(t *testing.T) {
 			Method: http.MethodGet, Headers: http.Header{}, URL: &url.URL{Path: "/protected/data"},
 		}, cache.DefaultExpiration)
 
-		events, w := solveChallenge(t, s, "req-1")
+		events, w := solveChallenge(t, s, "req-1", http.MethodGet)
 		if len(events) != 1 {
 			t.Fatalf("got %d events, want 1: %+v", len(events), events)
 		}
@@ -635,17 +641,115 @@ func TestVerifyErrorIsNotCountedAsSolved(t *testing.T) {
 	t.Run("a solve TPS cannot act on is not solved", func(t *testing.T) {
 		s := newTestServerWithStore(t, "http://backend:8080", &fakeStore{})
 
-		events, _ := solveChallenge(t, s, "never-cached")
+		events, _ := solveChallenge(t, s, "never-cached", http.MethodPost)
 		if len(events) != 1 {
 			t.Fatalf("got %d events, want 1: %+v", len(events), events)
 		}
 		if events[0].Outcome != db.OutcomeVerifyError {
 			t.Errorf("outcome = %q, want %q", events[0].Outcome, db.OutcomeVerifyError)
 		}
-		if events[0].Reason != db.ReasonReplayFailed {
-			t.Errorf("reason = %q, want %q", events[0].Reason, db.ReasonReplayFailed)
+		if events[0].Reason != db.ReasonChallengeExpired {
+			t.Errorf("reason = %q, want %q", events[0].Reason, db.ReasonChallengeExpired)
 		}
 	})
+}
+
+// TestExpiredChallengeRecovery covers the client who leaves the challenge page
+// sitting for longer than the request cache's TTL. They come back and solve it,
+// and the cookie they get is perfectly good -- the only thing missing is the
+// request they were making, which the challenge form still describes well
+// enough to recover a GET from.
+func TestExpiredChallengeRecovery(t *testing.T) {
+	tests := []struct {
+		name           string
+		originalMethod string
+		wantStatus     int
+		wantSolved     bool
+	}{
+		{
+			name:           "a GET is reissued as a redirect",
+			originalMethod: http.MethodGet,
+			wantStatus:     http.StatusSeeOther,
+			wantSolved:     true,
+		},
+		{
+			// The body is what expired, so there is nothing to send on. Quietly
+			// redirecting would turn the user's submission into a page view that
+			// looks like it worked.
+			name:           "a POST is told what happened",
+			originalMethod: http.MethodPost,
+			wantStatus:     http.StatusRequestTimeout,
+		},
+		{
+			// A hand-written challenge form that predates the field. Guessing
+			// GET would usually be right, and would silently discard data when
+			// it wasn't.
+			name:       "an undeclared method is not guessed at",
+			wantStatus: http.StatusRequestTimeout,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServerWithStore(t, "http://backend:8080", &fakeStore{})
+
+			// Nothing in the cache under this ID is exactly the state a solve
+			// after the five-minute TTL arrives in
+			events, w := solveChallenge(t, s, "long-expired", tc.originalMethod)
+
+			if w.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tc.wantStatus)
+			}
+			if w.Result().Cookies() == nil {
+				t.Error("no cookie was set; the client solved the challenge and should be verified")
+			}
+			if tc.wantStatus == http.StatusSeeOther {
+				if got := w.Header().Get("Location"); got != "/protected/data" {
+					t.Errorf("Location = %q, want the original URL", got)
+				}
+			}
+
+			if len(events) != 1 {
+				t.Fatalf("got %d events, want 1: %+v", len(events), events)
+			}
+			var wantOutcome = db.OutcomeVerifyError
+			if tc.wantSolved {
+				wantOutcome = db.OutcomeVerifyOK
+			}
+			if events[0].Outcome != wantOutcome {
+				t.Errorf("outcome = %q, want %q", events[0].Outcome, wantOutcome)
+			}
+		})
+	}
+}
+
+// TestChallengePageCarriesOriginalMethod is what makes the recovery above
+// possible: the method has to survive the round trip through the challenge
+// page, since the cache entry that would otherwise hold it is gone by then.
+func TestChallengePageCarriesOriginalMethod(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer backend.Close()
+
+	var mode = gin.Mode()
+	gin.SetMode(gin.ReleaseMode)
+	defer gin.SetMode(mode)
+
+	s := NewServer(gin.New(), &fakeStore{}).
+		SetJWTSigningKey("test-key").
+		SetProxyTarget(backend.URL)
+	s.LoadCoreTemplates("internal/templates/*.go.html", templates.FS)
+
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			s.r.ServeHTTP(w, httptest.NewRequest(method, "/protected/data", nil))
+
+			var want = `name="original_method" value="` + method + `"`
+			if !strings.Contains(w.Body.String(), want) {
+				t.Errorf("challenge page is missing %q:\n%s", want, w.Body.String())
+			}
+		})
+	}
 }
 
 // TestVerifiedRequestIsNotBodyLimited guards the other side of the body cap:

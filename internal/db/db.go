@@ -30,13 +30,14 @@ const (
 // a request came to be proxied). It may be empty for outcomes that need no
 // further detail.
 const (
-	ReasonNoCookie        = "no_cookie"        // challenged: no JWT cookie present
-	ReasonInvalidJWT      = "invalid_jwt"      // challenged: JWT present but unparseable
-	ReasonClientMismatch  = "client_mismatch"  // challenged: JWT bound to a different client
-	ReasonBudgetExhausted = "budget_exhausted" // challenged: token's request budget is spent
-	ReasonValidToken      = "valid_token"      // proxied: a live token authorized the request
-	ReasonVerifiedReplay  = "verified_replay"  // proxied/verify_ok: replay after solving a challenge
-	ReasonReplayFailed    = "replay_failed"    // verify_error: the solution was good, the replay wasn't
+	ReasonNoCookie         = "no_cookie"         // challenged: no JWT cookie present
+	ReasonInvalidJWT       = "invalid_jwt"       // challenged: JWT present but unparseable
+	ReasonClientMismatch   = "client_mismatch"   // challenged: JWT bound to a different client
+	ReasonBudgetExhausted  = "budget_exhausted"  // challenged: token's request budget is spent
+	ReasonValidToken       = "valid_token"       // proxied: a live token authorized the request
+	ReasonVerifiedReplay   = "verified_replay"   // proxied/verify_ok: replay after solving a challenge
+	ReasonReplayFailed     = "replay_failed"     // verify_error: the solution was good, the replay wasn't
+	ReasonChallengeExpired = "challenge_expired" // verify_error: solved after the cached request timed out
 )
 
 // Event is a single proxy decision to be recorded.

@@ -24,9 +24,14 @@ const (
 // This is *template* source, not final HTML: it is spliced into the template
 // before the template is parsed, so html/template escapes the values in
 // context, exactly as if the author had written the form by hand.
+//
+// original_method is what the interrupted request was. TPS normally reads the
+// method off the cached request, and only needs this if that cache entry
+// expired before the client solved the challenge — see recoverExpiredChallenge.
 const challengeFormMarkup = `
 <form id="tps-challenge-form" action="{{.PostAction}}" method="POST">
   <input type="hidden" name="request_id" value="{{.RequestID}}" />
+  <input type="hidden" name="original_method" value="{{.OriginalMethod}}" />
   <div class="cf-turnstile" data-sitekey="{{.SiteKey}}" data-callback="tpsChallengeSolved"></div>
 </form>
 <script>

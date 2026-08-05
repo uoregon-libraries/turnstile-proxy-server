@@ -764,9 +764,9 @@ func (s *Server) handleProxy(c *gin.Context) {
 			var e = s.baseEvent(c)
 			e.Outcome = db.OutcomeVerifyOK
 			e.Reason = db.ReasonVerifiedReplay
-			if !s.issueTokenAndReplay(c, requestID) {
+			if served, why := s.issueTokenAndReplay(c, requestID); !served {
 				e.Outcome = db.OutcomeVerifyError
-				e.Reason = db.ReasonReplayFailed
+				e.Reason = why
 			}
 			s.db.LogEvent(e)
 		} else {
@@ -815,6 +815,9 @@ func (s *Server) handleProxy(c *gin.Context) {
 		"SiteKey":    s.siteKey,
 		"RequestID":  newRequestID,
 		"PostAction": c.Request.URL,
+		// Carried through the form so a challenge that outlives its cache entry
+		// can still be recovered. See recoverExpiredChallenge.
+		"OriginalMethod": c.Request.Method,
 	})
 }
 
@@ -863,13 +866,13 @@ func (s *Server) replayRequest(c *gin.Context, req *http.Request) {
 // issueTokenAndReplay mints the session cookie for a client that just solved a
 // challenge and delivers the request the challenge interrupted.
 //
-// It reports whether the client was actually served: false means TPS accepted
-// the solution and then couldn't finish (the token wouldn't sign, or the
-// original request was gone), and the client got an error instead of the page
-// they asked for. Only failures TPS can see from here count -- once the request
-// is handed to the reverse proxy, a backend that then falls over is the
-// backend's problem, not a failed challenge.
-func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) bool {
+// It reports whether the client was actually served, and on failure the
+// db.Reason that says why: TPS accepted the solution and then couldn't finish,
+// so the client got an error instead of the page they asked for. Only failures
+// TPS can see from here count -- once the request is handed to the reverse
+// proxy, a backend that then falls over is the backend's problem, not a failed
+// challenge.
+func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) (served bool, failReason string) {
 	var jti = requestid.New()
 	var claimsMap = jwt.MapClaims{
 		"iss": "tps",
@@ -895,7 +898,7 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) bool {
 	if err != nil {
 		s.logger.Error("Failed to sign JWT", "error", err)
 		c.String(http.StatusInternalServerError, "Failed to create session")
-		return false
+		return false, db.ReasonReplayFailed
 	}
 
 	var secure = c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
@@ -910,9 +913,7 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) bool {
 
 	var cachedReqInterface, ok = s.requestCache.Get(requestID)
 	if !ok {
-		s.logger.Error("Could not find cached request", "requestID", requestID)
-		c.String(http.StatusInternalServerError, "Could not find original request")
-		return false
+		return s.recoverExpiredChallenge(c, requestID)
 	}
 
 	// This challenge is spent: the client has a cookie now, and a reload goes
@@ -933,7 +934,7 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) bool {
 	if cachedReq.Method == http.MethodGet {
 		s.logger.Debug("Redirecting to original GET after challenge", "URL", cachedReq.URL.String())
 		c.Redirect(http.StatusSeeOther, cachedReq.URL.String())
-		return true
+		return true, ""
 	}
 
 	s.logger.Debug("Replaying request", "Method", cachedReq.Method, "URL", cachedReq.URL)
@@ -942,11 +943,51 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) bool {
 	if reqErr != nil {
 		s.logger.Error("Could not create new request from cached", "requestID", requestID, "error", reqErr)
 		c.String(http.StatusInternalServerError, "Could not replay original request")
-		return false
+		return false, db.ReasonReplayFailed
 	}
 	req.Header = stripConditionalHeaders(cachedReq.Headers)
 	s.replayRequest(c, req)
-	return true
+	return true, ""
+}
+
+// recoverExpiredChallenge deals with a solved challenge whose original request
+// is no longer cached, which happens when the client took longer than the
+// cache's five-minute TTL to solve it. It returns whether the client was served.
+//
+// The cookie is already set by the time we get here, so the client is verified;
+// the only thing missing is the request the challenge interrupted. The URL
+// isn't actually lost with the cache entry — the challenge form posts to the
+// original URL, so it's the URL of the request in hand — and handleProxy has
+// already refused anything that isn't an ordinary same-origin path, so it's
+// safe to send the client back to it.
+//
+// What the URL can't tell us is the method, so the challenge form carries it.
+// A GET is reissued as the same redirect a live cache entry would have
+// produced, and the client sees no difference. Anything else had a body, and
+// the body is exactly what expired: there is nothing to replay, and quietly
+// reissuing a POST as a GET would drop whatever the user typed while looking
+// like it worked. Those get told what happened instead.
+//
+// A hand-written challenge form that doesn't send original_method is treated as
+// unknown, and takes the same honest failure — guessing "GET" would be right
+// most of the time, but the times it's wrong are the ones that lose data.
+func (s *Server) recoverExpiredChallenge(c *gin.Context, requestID string) (served bool, failReason string) {
+	var method = strings.ToUpper(c.PostForm("original_method"))
+	s.logger.Warn("Challenge solved after its cached request expired",
+		"requestID", requestID, "originalMethod", method, "url", c.Request.URL.String())
+
+	if method == http.MethodGet {
+		s.logger.Debug("Redirecting to the original URL after an expired challenge",
+			"URL", c.Request.URL.String())
+		c.Redirect(http.StatusSeeOther, c.Request.URL.String())
+		return true, ""
+	}
+
+	c.String(http.StatusRequestTimeout,
+		"The challenge took too long to solve, and the request it interrupted is no longer "+
+			"available to send on. You are verified now, so going back and submitting again "+
+			"will work.")
+	return false, db.ReasonChallengeExpired
 }
 
 // conditionalHeaders are request headers that ask the backend to answer with a
