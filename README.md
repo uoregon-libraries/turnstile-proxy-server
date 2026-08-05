@@ -20,7 +20,9 @@ Critical settings you can't just set to defaults:
   account and Turnstile widget setup
 - `PROXY_TARGET`: your protected app. Every request TPS verifies is sent here.
   This should be a host+port that is *not* publicly accessible, otherwise bots
-  can skip the protection TPS is trying to provide.
+  can skip the protection TPS is trying to provide. Give it a scheme and host
+  and nothing else — requests keep their own path when they're forwarded, so a
+  path here would have nothing to apply to, and TPS refuses to start with one.
 - `JWT_SIGNING_KEY`: *must* be set to something bots can't figure out. This
   signs the tokens, and a bot that learns the key can set up fake tokens that
   allow it to bypass TPS entirely. Unlikely, but possible, and really bad if it

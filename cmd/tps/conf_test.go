@@ -162,11 +162,20 @@ func TestValidateTargetURL(t *testing.T) {
 	}{
 		{name: "host and port", input: "http://app:8080"},
 		{name: "https", input: "https://app.example.edu"},
-		{name: "path and query", input: "http://h/p?q=1"},
+		{name: "bare trailing slash is the same target", input: "http://app:8080/"},
 		{name: "no scheme", input: "app:8080", wantErr: "must include scheme and host"},
 		{name: "no host", input: "http://", wantErr: "must include scheme and host"},
 		{name: "bare host", input: "app.example.edu", wantErr: "must include scheme and host"},
 		{name: "unparseable", input: "http://[::1", wantErr: "invalid URL"},
+
+		// Everything past the host is dropped when the request is forwarded, so
+		// it's refused rather than silently ignored
+		{name: "path", input: "http://app:8080/base", wantErr: "a path"},
+		{name: "path with trailing slash", input: "http://app:8080/base/", wantErr: "a path"},
+		{name: "query", input: "http://h/?q=1", wantErr: "a query string"},
+		{name: "fragment", input: "http://h/#frag", wantErr: "a fragment"},
+		{name: "credentials", input: "http://user:pw@h", wantErr: "credentials"},
+		{name: "path and query together", input: "http://h/p?q=1", wantErr: "a path and a query string"},
 	}
 
 	for _, tc := range tests {

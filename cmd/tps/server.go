@@ -208,6 +208,11 @@ func (s *Server) SetSiteKey(k string) *Server {
 // function without a valid target. Sending different paths to different
 // backends is the front proxy's job: route only the paths you want protected
 // to TPS, and give TPS one backend that knows what to do with them.
+//
+// The target is a scheme and host only. Each request keeps its own path and
+// query when it goes upstream, so a path on the target would have nowhere to
+// go; validateTargetURL refuses one at startup rather than let it look like a
+// mount point it isn't.
 func (s *Server) SetProxyTarget(target string) *Server {
 	var u, err = url.Parse(target)
 	if err != nil {

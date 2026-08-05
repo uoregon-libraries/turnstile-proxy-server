@@ -30,6 +30,12 @@ a.k.a., the "don't default to a stupidly big log database" release
 
 - `LOG_RETENTION` now defaults to 48 hours instead of 30 days to ensure massive
   traffic isn't running you out of disk space
+- **`PROXY_TARGET` must now be a scheme and host only.** A path on it (e.g.
+  `http://app:8080/base`) was accepted and then ignored — requests went to the
+  backend without the prefix — so it's a startup error now instead of a silent
+  lie. Query strings, fragments, and credentials are refused for the same
+  reason. A bare trailing slash is still fine. If your backend needs a path
+  prefix, add it in your front proxy.
 
 ## v3.0.0
 

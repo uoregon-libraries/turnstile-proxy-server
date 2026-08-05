@@ -23,12 +23,12 @@ import (
 )
 
 func TestSetProxyTarget(t *testing.T) {
-	s := (&Server{}).SetProxyTarget("http://app:8080/base")
+	s := (&Server{}).SetProxyTarget("http://app:8080")
 	if s.proxyTarget == nil {
 		t.Fatal("SetProxyTarget stored no target")
 	}
-	if got := s.proxyTarget.String(); got != "http://app:8080/base" {
-		t.Errorf("proxyTarget = %s, want http://app:8080/base", got)
+	if got := s.proxyTarget.String(); got != "http://app:8080" {
+		t.Errorf("proxyTarget = %s, want http://app:8080", got)
 	}
 
 	if unset := (&Server{}).proxyTarget; unset != nil {

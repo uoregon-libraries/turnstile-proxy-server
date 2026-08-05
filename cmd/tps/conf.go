@@ -211,7 +211,11 @@ func parseIntEnv(name string, def, minVal int, errs *[]string) int {
 }
 
 // validateTargetURL rejects a backend URL that can't be proxied to: it has to
-// parse, and it has to name a scheme and host.
+// parse, it has to name a scheme and host, and it has to be *only* a scheme and
+// host. TPS forwards each request's own path, query, and credentials to the
+// backend unchanged; anything of that sort on the target itself is dropped on
+// the floor. Accepting it would mean accepting a config that quietly does
+// something other than what it says, so it's a startup error instead.
 func validateTargetURL(target string) error {
 	var parsed, err = url.Parse(target)
 	if err != nil {
@@ -219,6 +223,28 @@ func validateTargetURL(target string) error {
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("URL %q must include scheme and host, e.g. http://app:8080", target)
+	}
+
+	// A bare trailing slash is the same target with nothing added, so it's
+	// allowed -- people write it out of habit and it costs nothing to honor
+	var extra []string
+	if parsed.EscapedPath() != "" && parsed.EscapedPath() != "/" {
+		extra = append(extra, "a path")
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery {
+		extra = append(extra, "a query string")
+	}
+	if parsed.Fragment != "" {
+		extra = append(extra, "a fragment")
+	}
+	if parsed.User != nil {
+		extra = append(extra, "credentials")
+	}
+	if len(extra) > 0 {
+		return fmt.Errorf("URL %q must be only a scheme and host, but it also has %s. TPS "+
+			"forwards each request's own path and query to the backend and ignores anything "+
+			"extra here, so use %s://%s and have your front proxy rewrite the path if the "+
+			"backend needs a prefix", target, strings.Join(extra, " and "), parsed.Scheme, parsed.Host)
 	}
 	return nil
 }
