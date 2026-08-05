@@ -1,8 +1,8 @@
 # Changelog
 
-## v3.0.1
+## v3.1.0
 
-a.k.a., the "don't default to a stupidly big log database" release
+Various bug-fixes and improvements, nothing amazing, nothing breaking.
 
 ### Added
 
