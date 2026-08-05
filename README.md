@@ -145,6 +145,22 @@ handle {
 }
 ```
 
+## Don't protect giant file upload forms!
+
+TPS has to hold data in RAM to replay whatever requests it's protecting. This
+is fine for any GET request, and it's usually okay for other requests. But it
+can trivially explode in RAM if you're protecting endpoints that expect a large
+POST body, such as a file upload.
+
+To limit RAM risks, we have low defaults for the stored challenge data
+(`MAX_CHALLENGE_BODY`: per-request limit, and `MAX_CHALLENGE_CACHE`: total RAM
+limit). Be careful raising these limits. The max cache should be high enough
+that you can hold every bot request's data in RAM while waiting for the
+challenge to timeout (five minutes), but not high enough to tip over your
+server.
+
+Wherever possible, only protect pages that are GET.
+
 ## Analytics
 
 TPS exposes some basic endpoints for reporting. There are two endpoints:
