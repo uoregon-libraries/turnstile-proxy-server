@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -67,6 +71,86 @@ func TestParseIntEnv(t *testing.T) {
 				t.Errorf("errs = %v, wantErr = %v", errs, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestRedactSecret(t *testing.T) {
+	if got := redactSecret("hunter2"); strings.Contains(got, "hunter2") {
+		t.Errorf("redactSecret leaked the value: %q", got)
+	}
+	if got, want := redactSecret(""), "[unset]"; got != want {
+		t.Errorf("redactSecret(%q) = %q, want %q", "", got, want)
+	}
+}
+
+func TestLogValue(t *testing.T) {
+	tests := []struct {
+		key      string
+		val      string
+		wantSame bool
+	}{
+		{key: "BIND_ADDR", val: ":8080", wantSame: true},
+		{key: "TURNSTILE_SITE_KEY", val: "public-and-fine", wantSame: true},
+		{key: "JWT_SIGNING_KEY", val: "shhhh"},
+		{key: "TURNSTILE_SECRET_KEY", val: "shhhh"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.key, func(t *testing.T) {
+			var got = logValue(tc.key, tc.val)
+			switch {
+			case tc.wantSame && got != tc.val:
+				t.Errorf("logValue(%q, %q) = %q, want the value unchanged", tc.key, tc.val, got)
+			case !tc.wantSame && strings.Contains(got, tc.val):
+				t.Errorf("logValue(%q, ...) = %q, which leaks the secret", tc.key, got)
+			}
+		})
+	}
+}
+
+// TestLoadEnvFileRedactsSecrets covers the whole path rather than just
+// logValue: the leak was in what loadEnvFile chose to log, so the test watches
+// the log itself.
+func TestLoadEnvFileRedactsSecrets(t *testing.T) {
+	var path = filepath.Join(t.TempDir(), "env")
+	var contents = strings.Join([]string{
+		`BIND_ADDR=:9999`,
+		`JWT_SIGNING_KEY="jwt-secret-value"`,
+		`TURNSTILE_SECRET_KEY='turnstile-secret-value'`,
+	}, "\n")
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatalf("writing env file: %s", err)
+	}
+
+	// loadEnvFile only sets vars that aren't already in the environment, so
+	// clear them for this test; t.Setenv restores them afterwards
+	for _, key := range []string{"BIND_ADDR", "JWT_SIGNING_KEY", "TURNSTILE_SECRET_KEY"} {
+		t.Setenv(key, "")
+		os.Unsetenv(key)
+	}
+
+	var buf bytes.Buffer
+	var saved = logger
+	logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	defer func() { logger = saved }()
+
+	if err := loadEnvFile(path); err != nil {
+		t.Fatalf("loadEnvFile: %s", err)
+	}
+
+	// The values still have to reach the environment; only the log is censored
+	if got := os.Getenv("JWT_SIGNING_KEY"); got != "jwt-secret-value" {
+		t.Errorf("JWT_SIGNING_KEY = %q, want the value from the file", got)
+	}
+
+	var logged = buf.String()
+	for _, secret := range []string{"jwt-secret-value", "turnstile-secret-value"} {
+		if strings.Contains(logged, secret) {
+			t.Errorf("log contains the secret %q:\n%s", secret, logged)
+		}
+	}
+	if !strings.Contains(logged, ":9999") {
+		t.Errorf("log dropped the non-secret BIND_ADDR value:\n%s", logged)
 	}
 }
 

@@ -48,11 +48,41 @@ func loadEnvFile(path string) error {
 		}
 
 		if _, set := os.LookupEnv(key); !set {
-			logger.Info("Setting ENV value from file", "file", path, "key", key, "val", val)
+			logger.Info("Setting ENV value from file", "file", path, "key", key, "val", logValue(key, val))
 			os.Setenv(key, val)
 		}
 	}
 	return scanner.Err()
+}
+
+// sensitiveEnvVars are the settings whose values must never be written to the
+// log. An env file is an ordinary way to configure TPS, and loadEnvFile
+// announces everything it sets, so without this the signing key and the
+// Turnstile secret land in the log in plaintext during a normal startup.
+var sensitiveEnvVars = map[string]bool{
+	"JWT_SIGNING_KEY":      true,
+	"TURNSTILE_SECRET_KEY": true,
+}
+
+// logValue is what the named setting's value should look like in the log:
+// itself, unless it's a secret.
+func logValue(key, val string) string {
+	if sensitiveEnvVars[key] {
+		return redactSecret(val)
+	}
+	return val
+}
+
+// redactSecret stands in for a secret in log output. It still distinguishes an
+// unset value from a set one, which is the only thing about a secret worth
+// knowing from a log: a key that silently didn't make it into the environment
+// is a real configuration bug, and hiding that would trade one debugging
+// problem for another.
+func redactSecret(val string) string {
+	if val == "" {
+		return "[unset]"
+	}
+	return "[redacted]"
 }
 
 // applyEnvFile loads the -env-file into the environment when one was given,

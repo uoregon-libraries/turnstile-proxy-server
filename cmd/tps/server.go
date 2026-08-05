@@ -518,8 +518,10 @@ func (s *Server) Run(addr string) error {
 	logger.Debug(
 		fmt.Sprintf("s.r.Run(%q)", bindAddr),
 		"s.siteKey", s.siteKey,
-		"s.secretKey", s.secretKey,
-		"s.jwtSigningKey", s.jwtSigningKey,
+		// The site key is public by design; the other two are not, and a debug
+		// run shouldn't be the thing that leaks them into a log file
+		"s.secretKey", redactSecret(s.secretKey),
+		"s.jwtSigningKey", redactSecret(string(s.jwtSigningKey)),
 		"s.proxyTarget", s.proxyTarget,
 		"s.templates", s.templates,
 	)

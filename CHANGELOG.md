@@ -19,6 +19,12 @@ a.k.a., the "don't default to a stupidly big log database" release
 - A solved challenge's cached request is now dropped as soon as it's replayed,
   saving RAM and removing a replay risk. Very few bots ever solve a challenge,
   though, so in practice this is a very minor improvement.
+- Secrets are no longer written to the log. `JWT_SIGNING_KEY` and
+  `TURNSTILE_SECRET_KEY` were logged in plaintext when loaded from an
+  `-env-file`, and again at debug level on startup; both now show `[redacted]`
+  (or `[unset]`, so a key that never made it into the environment is still
+  obvious). If you've been running with an env file, treat the keys in your
+  existing logs as exposed and rotate them.
 
 ### Changed
 
