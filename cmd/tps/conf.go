@@ -113,11 +113,11 @@ func getenv() {
 		}
 	}
 
-	logRetention = 720 * time.Hour
+	logRetention = 48 * time.Hour
 	if raw := os.Getenv("LOG_RETENTION"); raw != "" {
 		var d, derr = time.ParseDuration(raw)
 		if derr != nil || d < 0 {
-			errs = append(errs, fmt.Sprintf(`LOG_RETENTION %q must be a non-negative Go duration such as 720h, or 0 to keep events forever`, raw))
+			errs = append(errs, fmt.Sprintf(`LOG_RETENTION %q must be a non-negative Go duration such as 48h, or 0 to keep events forever`, raw))
 		} else {
 			logRetention = d
 		}
