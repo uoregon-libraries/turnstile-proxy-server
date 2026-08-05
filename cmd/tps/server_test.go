@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -523,6 +525,85 @@ func TestStripConditionalHeaders(t *testing.T) {
 	}
 	if stripped.Get("Accept") != "text/html" {
 		t.Error("non-conditional header Accept was dropped")
+	}
+}
+
+func TestOriginFormURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		want   bool
+	}{
+		{"ordinary path", "/protected/data", true},
+		{"path with query", "/protected/data?a=1", true},
+		{"root", "/", true},
+		{"inner double slash is fine", "/protected//data", true},
+		{"encoded leading slashes are unambiguous", "/%2f%2fevil.com/x", true},
+		{"protocol-relative", "//evil.com/x", false},
+		{"protocol-relative with query", "//evil.com/x?a=1", false},
+		{"absolute form", "http://evil.com/x", false},
+		{"absolute form with userinfo", "http://user@evil.com/x", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			u, err := url.ParseRequestURI(tc.target)
+			if err != nil {
+				t.Fatalf("parsing %q: %v", tc.target, err)
+			}
+			if got := originFormURL(u); got != tc.want {
+				t.Errorf("originFormURL(%q) = %v, want %v", tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRejectsOffOriginRequestTarget is the end-to-end half of the check above.
+// TPS echoes the request URL into the challenge form's action and into the
+// post-solve redirect, so a target naming another origin would have the
+// challenge page POST the visitor's Turnstile solution to that origin and then
+// redirect the visitor there. Both spellings have to be refused outright, and
+// the attacker's host must not appear anywhere in the response.
+//
+// These targets are sent over a raw socket because net/http's client refuses
+// to put them on the wire, which is exactly why they need a test: only a
+// hand-rolled request (or a browser following a crafted link) produces them.
+func TestRejectsOffOriginRequestTarget(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("backend response"))
+	}))
+	defer backend.Close()
+
+	tps := httptest.NewServer(newTestServer(t, backend.URL).r)
+	defer tps.Close()
+
+	for _, target := range []string{"//evil.com/x", "http://evil.com/x", "//evil.com/x?a=1"} {
+		t.Run(target, func(t *testing.T) {
+			conn, err := net.Dial("tcp", strings.TrimPrefix(tps.URL, "http://"))
+			if err != nil {
+				t.Fatalf("dialing test server: %v", err)
+			}
+			defer conn.Close()
+
+			_, err = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: good.example\r\nConnection: close\r\n\r\n", target)
+			if err != nil {
+				t.Fatalf("writing request: %v", err)
+			}
+
+			raw, err := io.ReadAll(conn)
+			if err != nil {
+				t.Fatalf("reading response: %v", err)
+			}
+			resp := string(raw)
+
+			if !strings.HasPrefix(resp, "HTTP/1.1 400 ") {
+				t.Errorf("target %q got status line %q, want 400",
+					target, strings.SplitN(resp, "\r\n", 2)[0])
+			}
+			if strings.Contains(resp, "evil.com") {
+				t.Errorf("target %q had the off-origin host reflected into the response:\n%s", target, resp)
+			}
+		})
 	}
 }
 

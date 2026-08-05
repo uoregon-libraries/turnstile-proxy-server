@@ -4,6 +4,18 @@
 
 a.k.a., the "don't default to a stupidly big log database" release
 
+### Fixed
+
+- **Requests whose target names another origin are now refused with a 400.**
+  TPS echoes the request URL into the challenge form's `action` and into the
+  redirect it issues after a solve, so a link like
+  `https://yoursite.example//evil.example/x` — or a hand-rolled request using
+  HTTP's absolute-form target, `GET http://evil.example/x` — made the challenge
+  page POST the visitor's Turnstile solution to the attacker's host and then
+  redirected the visitor there, all under your site's "verifying you are human"
+  page. Ordinary paths are unaffected, including ones with a double slash
+  anywhere but the very front.
+
 ### Changed
 
 - `LOG_RETENTION` now defaults to 48 hours instead of 30 days to ensure massive

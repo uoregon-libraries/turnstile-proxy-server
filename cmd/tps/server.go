@@ -532,7 +532,42 @@ func (s *Server) getTemplate(r *http.Request, shortname string) string {
 	return "core/" + shortname
 }
 
+// originFormURL reports whether the request target is in the "origin-form"
+// that every real client sends: an absolute path with no scheme or authority
+// of its own, and no leading "//".
+//
+// TPS echoes the request URL straight back to the browser twice — as the
+// challenge form's action and as the post-solve redirect — so a target naming
+// another origin turns a link to a protected site into an attack. HTTP/1.1
+// allows the absolute-form target "GET http://evil.com/x", and net/http parses
+// it faithfully; a path of "//evil.com/x" is likewise a protocol-relative URL
+// once a browser resolves it. Either one makes the challenge page POST the
+// visitor's Turnstile solution to evil.com and then redirects the visitor
+// there, wearing the protected site's "verifying you are human" page as cover.
+//
+// The test is on EscapedPath rather than Path because that is what URL.String
+// emits: a percent-encoded "/%2f%2fevil.com" is unambiguous to a browser and
+// stays allowed, while a literal "//evil.com" is not.
+func originFormURL(u *url.URL) bool {
+	if u.Scheme != "" || u.Host != "" || u.User != nil {
+		return false
+	}
+	var path = u.EscapedPath()
+	return strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "//")
+}
+
 func (s *Server) handleProxy(c *gin.Context) {
+	// Refuse anything that doesn't address this origin before it can reach a
+	// handler that would echo it back to the browser. Nothing legitimate asks
+	// for such a URL, so this is a flat rejection rather than an attempt to
+	// rewrite the target into something safe.
+	if !originFormURL(c.Request.URL) {
+		s.logger.Warn("Refusing request whose target names another origin",
+			"url", c.Request.URL.String(), "clientIP", c.ClientIP())
+		c.String(http.StatusBadRequest, "Bad request target")
+		return
+	}
+
 	// The reserved admin prefix is always handled by TPS itself and is never
 	// proxied or challenged. It is checked before everything else so these
 	// internal endpoints can't be shadowed by a backend path.
