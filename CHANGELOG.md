@@ -4,6 +4,18 @@
 
 a.k.a., the "don't default to a stupidly big log database" release
 
+### Added
+
+- **`MAX_CHALLENGE_BODY` and `MAX_CHALLENGE_CACHE`** bound the memory an
+  unverified client can make TPS allocate. Serving a challenge means holding
+  the original request for five minutes so it can be replayed after the solve,
+  and nothing capped that: a bot could POST a body of any size and have TPS
+  buffer all of it, as many times over as it liked. Now one buffered body is
+  capped (default 1MiB, 413 over it) and so is the total across all pending
+  challenges (default 256MiB, 503 over it). Verified requests are unaffected —
+  they stream to the backend and were never buffered — so a user who has solved
+  a challenge can still upload whatever your backend accepts.
+
 ### Fixed
 
 - **Requests whose target names another origin are now refused with a 400.**
@@ -15,6 +27,9 @@ a.k.a., the "don't default to a stupidly big log database" release
   redirected the visitor there, all under your site's "verifying you are human"
   page. Ordinary paths are unaffected, including ones with a double slash
   anywhere but the very front.
+- A solved challenge's cached request is now dropped as soon as it's replayed,
+  instead of sitting in memory for the rest of its five-minute TTL. That also
+  closes the window in which a leaked request ID could be replayed again.
 
 ### Changed
 

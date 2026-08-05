@@ -127,6 +127,12 @@ func getenv() {
 	tokenRequestBudget = parseIntEnv("TOKEN_REQUEST_BUDGET", 1000, 0, &errs)
 	tokenIPSwitchCost = parseIntEnv("TOKEN_IP_SWITCH_COST", 10, 1, &errs)
 
+	maxChallengeBody = int64(parseIntEnv("MAX_CHALLENGE_BODY", defaultMaxChallengeBody, 0, &errs))
+	maxChallengeCache = int64(parseIntEnv("MAX_CHALLENGE_CACHE", defaultMaxChallengeCache, 0, &errs))
+	if cerr := validateChallengeLimits(maxChallengeBody, maxChallengeCache); cerr != nil {
+		errs = append(errs, cerr.Error())
+	}
+
 	if templatePath == "" {
 		templatePath = "/var/local/tps/templates"
 	}
@@ -183,6 +189,20 @@ func validateTargetURL(target string) error {
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("URL %q must include scheme and host, e.g. http://app:8080", target)
+	}
+	return nil
+}
+
+// validateChallengeLimits rejects a pair of challenge memory limits that can't
+// work together. The total has to fit at least one request of the largest
+// permitted size plus its per-entry overhead, or a request TPS just told the
+// client was acceptable would be shed by the cache a moment later — every
+// time, for every client, no matter how idle the server is.
+func validateChallengeLimits(body, total int64) error {
+	if want := body + cachedRequestOverhead; total < want {
+		return fmt.Errorf("MAX_CHALLENGE_CACHE (%d) is too small for MAX_CHALLENGE_BODY (%d): it must be "+
+			"at least %d so one largest-allowed request fits, otherwise every request that size is refused",
+			total, body, want)
 	}
 	return nil
 }

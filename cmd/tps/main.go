@@ -28,6 +28,8 @@ var tokenLifetime time.Duration
 var tokenBindUserAgent bool
 var tokenRequestBudget int
 var tokenIPSwitchCost int
+var maxChallengeBody int64
+var maxChallengeCache int64
 var adminSecret string
 
 var logger *slog.Logger
@@ -125,6 +127,15 @@ func help() {
 	fmt.Println("- TOKEN_IP_SWITCH_COST (optional): budget cost of a request whose IP differs from the token's")
 	fmt.Println("                 previous request. IPs are tracked exactly for IPv4 and as a /64 for IPv6.")
 	fmt.Println("                 Defaults to 10; minimum 1 (an ordinary request).")
+	fmt.Println("- MAX_CHALLENGE_BODY (optional): largest request body, in bytes, TPS will buffer for a client")
+	fmt.Println("                 it hasn't verified yet. Serving a challenge means holding the original request")
+	fmt.Println("                 so it can be replayed after the solve, so this bounds what one unverified")
+	fmt.Println("                 client can make TPS allocate. Over the limit gets a 413. Defaults to 1048576")
+	fmt.Println("                 (1MiB). Verified requests stream to the backend and are never buffered.")
+	fmt.Println("- MAX_CHALLENGE_CACHE (optional): total bytes, across every challenge pending at once, TPS will")
+	fmt.Println("                 spend holding requests waiting to be replayed. Once it's full, further")
+	fmt.Println("                 challenges are shed with a 503 until some expire. Defaults to 268435456")
+	fmt.Println("                 (256MiB); must be at least MAX_CHALLENGE_BODY.")
 	fmt.Println("- ADMIN_SECRET (optional): shared secret unlocking the /.tps/report endpoint (JSON stats).")
 	fmt.Println("                 Unset disables it (404). When set, present it as a bearer token or ?key=. The")
 	fmt.Println("                 public /.tps/beacon (JS-execution signal) is unaffected. Route /.tps/ to TPS in")
@@ -185,6 +196,7 @@ func serve() {
 		SetTokenLifetime(tokenLifetime).
 		SetClientBinding(tokenBindUserAgent).
 		SetRequestBudget(tokenRequestBudget, tokenIPSwitchCost).
+		SetChallengeLimits(maxChallengeBody, maxChallengeCache).
 		SetAdminSecret(adminSecret).
 		SetLogger(logger.With("log.source", "main.Server"))
 

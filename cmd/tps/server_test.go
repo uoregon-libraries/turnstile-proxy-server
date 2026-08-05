@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"turnstile-proxy-server/internal/db"
@@ -457,6 +458,179 @@ func TestChallengedPostKeepsItsBody(t *testing.T) {
 				t.Errorf("cached method = %q, want POST", cached[0].Method)
 			}
 		})
+	}
+}
+
+// TestChallengeBodyLimit covers the memory an unverified client gets to make
+// TPS allocate. Serving a challenge means buffering the original request and
+// holding it for the life of the request cache, so without a cap any bot can
+// hand TPS a body of whatever size it likes and have it kept for five minutes.
+func TestChallengeBodyLimit(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	defer backend.Close()
+
+	tests := []struct {
+		name     string
+		size     int
+		wantCode int
+	}{
+		{"under the limit is challenged", 32, http.StatusForbidden},
+		{"at the limit is challenged", 64, http.StatusForbidden},
+		{"over the limit is refused", 65, http.StatusRequestEntityTooLarge},
+		{"far over the limit is refused", 1 << 16, http.StatusRequestEntityTooLarge},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t, backend.URL).SetChallengeLimits(64, 1<<20)
+
+			req := httptest.NewRequest("POST", "/search", strings.NewReader(strings.Repeat("x", tc.size)))
+			w := httptest.NewRecorder()
+			s.r.ServeHTTP(w, req)
+
+			if w.Code != tc.wantCode {
+				t.Errorf("%d-byte body got status %d, want %d", tc.size, w.Code, tc.wantCode)
+			}
+			// A refused request must not have been cached on the way out.
+			wantCached := 0
+			if tc.wantCode == http.StatusForbidden {
+				wantCached = 1
+			}
+			if got := s.requestCache.ItemCount(); got != wantCached {
+				t.Errorf("%d cached requests after a %d status, want %d", got, w.Code, wantCached)
+			}
+		})
+	}
+}
+
+// TestChallengeCacheBudget checks the ceiling across all pending challenges,
+// which is the half the per-request limit can't cover: each cached request is
+// held for five minutes whether or not its client is still there, so a flood
+// of individually-legal requests still adds up without a total.
+func TestChallengeCacheBudget(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	defer backend.Close()
+
+	// Room for exactly three pending challenges, counting the flat per-entry
+	// overhead every cached request is charged.
+	s := newTestServer(t, backend.URL).SetChallengeLimits(1<<20, 3*cachedRequestOverhead)
+
+	challenge := func() int {
+		req := httptest.NewRequest("GET", "/protected/data", nil)
+		w := httptest.NewRecorder()
+		s.r.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for i := range 3 {
+		if code := challenge(); code != http.StatusForbidden {
+			t.Fatalf("challenge %d got status %d, want %d", i+1, code, http.StatusForbidden)
+		}
+	}
+
+	if code := challenge(); code != http.StatusServiceUnavailable {
+		t.Errorf("challenge past the budget got status %d, want %d", code, http.StatusServiceUnavailable)
+	}
+	if got := s.requestCache.ItemCount(); got != 3 {
+		t.Errorf("%d cached requests, want 3 (the shed request must not be cached)", got)
+	}
+
+	// Expiring a pending challenge has to give its budget back, or the cache
+	// silently ratchets shut over the life of the process. Delete is the path
+	// the janitor takes for a challenge nobody solved (and the one the replay
+	// takes for a challenge somebody did) — not Flush, which drops items
+	// without running the eviction hook the accounting hangs on.
+	for key := range s.requestCache.Items() {
+		s.requestCache.Delete(key)
+	}
+	if got := s.cachedBytes.Load(); got != 0 {
+		t.Errorf("cachedBytes = %d after the pending challenges expired, want 0", got)
+	}
+	if code := challenge(); code != http.StatusForbidden {
+		t.Errorf("challenge after the cache drained got status %d, want %d", code, http.StatusForbidden)
+	}
+}
+
+// TestReplayReleasesCachedRequest pairs with the budget above: a solved
+// challenge is spent, so its request should leave the cache immediately rather
+// than sitting on its memory for the rest of the TTL.
+func TestReplayReleasesCachedRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := NewServer(gin.New(), db.NewNoopStore()).
+		SetJWTSigningKey("test-key").
+		SetProxyTarget("http://backend:8080")
+
+	body := []byte("q=rye+bread")
+	s.cachedBytes.Add(cachedRequestCost(body))
+	s.requestCache.Set("req-1", &cachedRequest{
+		Method:  http.MethodGet,
+		Body:    body,
+		Headers: http.Header{},
+		URL:     &url.URL{Path: "/protected/data"},
+	}, cache.DefaultExpiration)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/protected/data", nil)
+	s.issueTokenAndReplay(c, "req-1")
+
+	if _, found := s.requestCache.Get("req-1"); found {
+		t.Error("the cached request survived the replay that consumed it")
+	}
+	if got := s.cachedBytes.Load(); got != 0 {
+		t.Errorf("cachedBytes = %d after the replay, want 0", got)
+	}
+}
+
+// TestVerifiedRequestIsNotBodyLimited guards the other side of the body cap:
+// the limit exists to bound what an *unverified* client can allocate, and a
+// request carrying a live token is streamed to the backend rather than
+// buffered, so a real upload must not be capped by it.
+func TestVerifiedRequestIsNotBodyLimited(t *testing.T) {
+	var got atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		got.Store(n)
+	}))
+	defer backend.Close()
+
+	// Budget on and User-Agent binding off leaves nothing for the token to be
+	// bound to, so a bare signed token is accepted and takes the proxy path.
+	s := newTestServer(t, backend.URL).
+		SetChallengeLimits(64, 1<<20).
+		SetRequestBudget(10, 1).
+		SetClientBinding(false)
+
+	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"jti": "token-1",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}).SignedString(s.jwtSigningKey)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	// Through a real listener rather than a recorder: ReverseProxy needs a
+	// ResponseWriter that implements http.CloseNotifier, which
+	// httptest.ResponseRecorder doesn't.
+	tps := httptest.NewServer(s.r)
+	defer tps.Close()
+
+	const size = 4096
+	req, err := http.NewRequest("POST", tps.URL+"/upload", strings.NewReader(strings.Repeat("x", size)))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: raw})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("sending request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got status %d, want 200 (proxied)", resp.StatusCode)
+	}
+	if n := got.Load(); n != size {
+		t.Errorf("backend received %d bytes, want %d — a verified upload was capped", n, size)
 	}
 }
 

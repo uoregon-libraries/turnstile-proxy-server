@@ -79,6 +79,32 @@ TOKEN_BIND_USER_AGENT=true
 TOKEN_REQUEST_BUDGET=1000
 TOKEN_IP_SWITCH_COST=10
 
+# Memory a challenge is allowed to cost TPS.
+#
+# To serve a challenge, TPS has to hold onto the original request so it can be
+# replayed once the client solves it. That's memory an *unverified* client --
+# which is to say, any bot -- gets to make TPS allocate, and it's held for the
+# five minutes a pending challenge lives, whether or not the client is still
+# there.
+#
+# MAX_CHALLENGE_BODY (bytes, default 1MiB) is the largest single request body
+# TPS will buffer for a client it hasn't verified yet. Bigger gets a 413.
+#
+# MAX_CHALLENGE_CACHE (bytes, default 256MiB) is the ceiling across every
+# challenge pending at once. Once it's full, further challenges are shed with a
+# 503 until some expire -- one client loses a challenge, instead of the whole
+# gate being lost to an out-of-memory kill. It must be at least
+# MAX_CHALLENGE_BODY (plus a small per-request overhead), or requests of the
+# size you just permitted would be shed the moment they arrived.
+#
+# Neither limit touches verified traffic: a request with a live token is
+# streamed straight to the backend and never buffered, so a user who has
+# solved a challenge can upload whatever your backend accepts. Raise
+# MAX_CHALLENGE_BODY only if unverified clients legitimately POST large bodies
+# to you -- an API client hitting a protected endpoint cold, say.
+MAX_CHALLENGE_BODY=1048576
+MAX_CHALLENGE_CACHE=268435456
+
 # Shared secret that unlocks TPS's analytics endpoint under the reserved
 # /.tps/ path: /.tps/report (JSON challenge stats). When unset, the endpoint is
 # DISABLED and returns 404 -- it is strictly opt-in, because TPS is meant to

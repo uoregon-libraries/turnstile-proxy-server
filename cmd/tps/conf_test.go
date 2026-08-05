@@ -102,6 +102,34 @@ func TestValidateTargetURL(t *testing.T) {
 	}
 }
 
+func TestValidateChallengeLimits(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    int64
+		total   int64
+		wantErr bool
+	}{
+		{name: "the defaults agree", body: defaultMaxChallengeBody, total: defaultMaxChallengeCache},
+		{name: "room for exactly one largest request", body: 1000, total: 1000 + cachedRequestOverhead},
+		{name: "no room for the per-entry overhead", body: 1000, total: 1000, wantErr: true},
+		{name: "total below body", body: 1 << 20, total: 1 << 10, wantErr: true},
+		{name: "bodyless still needs overhead", body: 0, total: 0, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateChallengeLimits(tc.body, tc.total)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateChallengeLimits(%d, %d) = %v, wantErr = %v",
+					tc.body, tc.total, err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "MAX_CHALLENGE_CACHE") {
+				t.Errorf("error %q doesn't name the setting to change", err)
+			}
+		})
+	}
+}
+
 func TestRemovedVarErrors(t *testing.T) {
 	t.Run("nothing set", func(t *testing.T) {
 		if errs := removedVarErrors(); len(errs) != 0 {

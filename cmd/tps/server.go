@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"turnstile-proxy-server/internal/db"
@@ -41,6 +42,18 @@ const (
 	// configurable; the request budget is the tuning knob.
 	maskBitsIPv4 = 32
 	maskBitsIPv6 = 64
+
+	// defaultMaxChallengeBody / defaultMaxChallengeCache bound the memory a
+	// challenge can cost TPS. See [Server.SetChallengeLimits].
+	defaultMaxChallengeBody  = 1 << 20   // 1MiB
+	defaultMaxChallengeCache = 256 << 20 // 256MiB
+
+	// cachedRequestOverhead is charged against the cache budget for every
+	// pending challenge on top of its body, covering the URL and headers that
+	// are cached alongside it. It's an estimate — measuring a header map for
+	// real costs more than it's worth — but it's what keeps a flood of small
+	// bodyless requests from being free.
+	cachedRequestOverhead = 4096
 )
 
 // trustedProxyCIDRs lists the networks from which TPS will honor
@@ -100,6 +113,14 @@ type Server struct {
 	requestCache  *cache.Cache
 	proxyTarget   *url.URL
 	templates     map[string]string
+
+	maxChallengeBody  int64
+	maxChallengeCache int64
+	// cachedBytes is what the pending challenges in requestCache are currently
+	// charged against maxChallengeCache. Reserved before an entry goes in and
+	// released by the cache's eviction hook, so an expiring entry gives its
+	// budget back without anyone having to remember to do it.
+	cachedBytes atomic.Int64
 }
 
 // NewServer creates and configures a new Server instance. You must manually
@@ -108,7 +129,11 @@ type Server struct {
 // is set to [slog.Default]. Use the various SetX methods to
 // change these settings.
 func NewServer(router *gin.Engine, store db.Store) *Server {
-	var requestCache = cache.New(5*time.Minute, 10*time.Minute)
+	// Sweep expired challenges every minute rather than every ten: the
+	// eviction hook below is what returns their memory to the cache budget, so
+	// a lazy janitor would keep TPS paying for requests that timed out long
+	// ago.
+	var requestCache = cache.New(5*time.Minute, time.Minute)
 
 	// Templates hot-reload in debug mode, exactly as they would under Gin's
 	// own renderers, and are parsed once in release mode
@@ -134,10 +159,29 @@ func NewServer(router *gin.Engine, store db.Store) *Server {
 		budgetCache:   cache.New(time.Hour, 10*time.Minute),
 		requestCache:  requestCache,
 		templates:     make(map[string]string),
+
+		maxChallengeBody:  defaultMaxChallengeBody,
+		maxChallengeCache: defaultMaxChallengeCache,
 	}
+
+	// Give a pending challenge's memory back the moment it leaves the cache,
+	// however it leaves: expired by the janitor, or deleted after the replay
+	// that consumed it.
+	requestCache.OnEvicted(func(_ string, v any) {
+		if cached, ok := v.(*cachedRequest); ok {
+			s.cachedBytes.Add(-cachedRequestCost(cached.Body))
+		}
+	})
+
 	s.r.Any("/*proxyPath", s.handleProxy)
 
 	return s
+}
+
+// cachedRequestCost is what caching a request with the given body charges
+// against the cache budget.
+func cachedRequestCost(body []byte) int64 {
+	return int64(len(body)) + cachedRequestOverhead
 }
 
 // SetLogger sets the logger and returns s for chaining
@@ -212,6 +256,25 @@ func (s *Server) SetAdminSecret(secret string) *Server {
 func (s *Server) SetRequestBudget(budget, switchCost int) *Server {
 	s.requestBudget = budget
 	s.ipSwitchCost = switchCost
+	return s
+}
+
+// SetChallengeLimits bounds the memory a challenge can cost TPS.
+//
+// To serve a challenge, TPS has to hold the original request until the client
+// solves it, so the request can be replayed afterwards. That is memory an
+// unverified client — which is to say, any bot — gets to allocate: body is the
+// largest single request TPS will buffer for a client it hasn't verified, and
+// total is the ceiling across every challenge pending at once. Over either
+// limit TPS refuses the request (413 and 503 respectively) rather than growing
+// without bound, because a gate that gets OOM-killed protects nothing.
+//
+// Neither limit touches verified traffic: a request carrying a live token is
+// streamed straight to the backend and never buffered, so a client that solved
+// a challenge can upload whatever the backend accepts.
+func (s *Server) SetChallengeLimits(body, total int64) *Server {
+	s.maxChallengeBody = body
+	s.maxChallengeCache = total
 	return s
 }
 
@@ -632,8 +695,20 @@ func (s *Server) handleProxy(c *gin.Context) {
 	// with an empty body and replayed to the backend with the user's data
 	// gone. The valid-token path above returns before we get here, so ordinary
 	// proxied traffic still streams rather than being buffered.
+	// Cap what an unverified client can make TPS hold. Without this, any bot
+	// can post a body of arbitrary size and TPS buffers all of it — and then
+	// keeps it for the five-minute life of the request cache. A verified
+	// request never reaches here, so this doesn't limit real uploads.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, s.maxChallengeBody)
 	var body, readErr = io.ReadAll(c.Request.Body)
 	if readErr != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(readErr, &tooLarge) {
+			s.logger.Warn("Request body too large to challenge",
+				"limit", s.maxChallengeBody, "clientIP", c.ClientIP(), "path", c.Request.URL.Path)
+			c.String(http.StatusRequestEntityTooLarge, "Request body too large")
+			return
+		}
 		s.logger.Error("Could not read original request body", "error", readErr)
 		c.String(http.StatusInternalServerError, "Could not buffer request")
 		return
@@ -684,6 +759,22 @@ func (s *Server) handleProxy(c *gin.Context) {
 
 	// This is a new request, cache it and serve the challenge
 	s.logger.Debug("handleProxy: new request, presenting challenge")
+
+	// Reserve the cache budget before taking the memory. Challenges pending at
+	// once are otherwise unbounded: each one holds its request for five
+	// minutes whether or not the client is still there, so a flood outlives
+	// itself by five minutes and keeps growing. Shedding with a 503 is the
+	// right failure here — it costs one client a challenge, where running out
+	// of memory costs everyone the whole gate.
+	var cost = cachedRequestCost(body)
+	if s.cachedBytes.Add(cost) > s.maxChallengeCache {
+		s.cachedBytes.Add(-cost)
+		s.logger.Warn("Too many challenges pending to cache another request",
+			"limit", s.maxChallengeCache, "clientIP", c.ClientIP(), "path", c.Request.URL.Path)
+		c.String(http.StatusServiceUnavailable, "Too many challenges in flight, try again shortly")
+		return
+	}
+
 	var newRequestID = requestid.New()
 	var cachedReq = &cachedRequest{
 		Method:  c.Request.Method,
@@ -793,7 +884,12 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) {
 		return
 	}
 
+	// This challenge is spent: the client has a cookie now, and a reload goes
+	// through on its own. Dropping the entry hands its memory straight back to
+	// the cache budget instead of holding it for the rest of the five-minute
+	// TTL, and closes the window where a leaked request ID could be replayed.
 	var cachedReq = cachedReqInterface.(*cachedRequest)
+	s.requestCache.Delete(requestID)
 
 	// For a GET, use POST/Redirect/GET: the challenge was solved via a form
 	// POST to the original URL, so the browser's history entry for that URL is
