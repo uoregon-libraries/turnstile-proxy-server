@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.0.1
+
+a.k.a., the "don't default to a stupidly big log database" release
+
+### Changed
+
+- `LOG_RETENTION` now defaults to 48 hours instead of 30 days to ensure massive
+  traffic isn't running you out of disk space
+
 ## v3.0.0
 
 This release improves custom templates, fixes some bugs, and also *takes
