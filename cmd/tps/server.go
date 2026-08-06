@@ -547,8 +547,8 @@ func (s *Server) Run(addr string) error {
 		return errors.New("no proxy target configured")
 	}
 
-	logger.Debug(
-		fmt.Sprintf("s.r.Run(%q)", bindAddr),
+	s.logger.Debug(
+		fmt.Sprintf("s.r.Run(%q)", addr),
 		"s.siteKey", s.siteKey,
 		// The site key is public by design; the other two are not, and a debug
 		// run shouldn't be the thing that leaks them into a log file
@@ -579,7 +579,7 @@ func (s *Server) Run(addr string) error {
 		return err
 	case <-ctx.Done():
 		stop()
-		logger.Info("Shutting down, draining in-flight requests")
+		s.logger.Info("Shutting down, draining in-flight requests")
 		var shutdownCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)

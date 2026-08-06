@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"time"
 	"turnstile-proxy-server/internal/db"
 	"turnstile-proxy-server/internal/templates"
 	"turnstile-proxy-server/internal/version"
@@ -15,22 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 	sloggin "github.com/samber/slog-gin"
 )
-
-var bindAddr string
-var turnstileSecretKey string
-var turnstileSiteKey string
-var jwtSigningKey string
-var proxyTarget string
-var logDBPath string
-var logRetention time.Duration
-var templatePath string
-var tokenLifetime time.Duration
-var tokenBindUserAgent bool
-var tokenRequestBudget int
-var tokenIPSwitchCost int
-var maxChallengeBody int64
-var maxChallengeCache int64
-var adminSecret string
 
 var logger *slog.Logger
 
@@ -130,15 +113,19 @@ func vacuum() {
 }
 
 func serve() {
-	getenv()
+	var conf, errs = getenv()
+	if len(errs) != 0 {
+		logger.Error("Cannot start server", "error", strings.Join(errs, "; "))
+		os.Exit(1)
+	}
 
 	var store db.Store
-	if logDBPath == "" {
+	if conf.logDBPath == "" {
 		logger.Info("LOG_DB_PATH is not set; event logging is disabled")
 		store = db.NewNoopStore()
 	} else {
 		var err error
-		store, err = db.NewStore(logDBPath, logRetention, logger)
+		store, err = db.NewStore(conf.logDBPath, conf.logRetention, logger)
 		if err != nil {
 			logger.Error("Cannot open event log database", "error", err)
 			os.Exit(1)
@@ -152,22 +139,22 @@ func serve() {
 	router.Use(gin.Recovery())
 
 	var server = NewServer(router, store).
-		SetSecretKey(turnstileSecretKey).
-		SetSiteKey(turnstileSiteKey).
-		SetProxyTarget(proxyTarget).
-		SetJWTSigningKey(jwtSigningKey).
-		SetTokenLifetime(tokenLifetime).
-		SetClientBinding(tokenBindUserAgent).
-		SetRequestBudget(tokenRequestBudget, tokenIPSwitchCost).
-		SetChallengeLimits(maxChallengeBody, maxChallengeCache).
-		SetAdminSecret(adminSecret).
+		SetSecretKey(conf.turnstileSecretKey).
+		SetSiteKey(conf.turnstileSiteKey).
+		SetProxyTarget(conf.proxyTarget).
+		SetJWTSigningKey(conf.jwtSigningKey).
+		SetTokenLifetime(conf.tokenLifetime).
+		SetClientBinding(conf.tokenBindUserAgent).
+		SetRequestBudget(conf.tokenRequestBudget, conf.tokenIPSwitchCost).
+		SetChallengeLimits(conf.maxChallengeBody, conf.maxChallengeCache).
+		SetAdminSecret(conf.adminSecret).
 		SetLogger(logger.With("log.source", "main.Server"))
 
 	server.LoadCoreTemplates("internal/templates/*.go.html", templates.FS)
-	server.LoadCustomTemplates(templatePath)
+	server.LoadCustomTemplates(conf.templatePath)
 
-	logger.Info("Starting TPS", "addr", bindAddr)
-	var err = server.Run(bindAddr)
+	logger.Info("Starting TPS", "addr", conf.bindAddr)
+	var err = server.Run(conf.bindAddr)
 	if err != nil {
 		logger.Error("Could not start server", "error", err)
 		os.Exit(1)

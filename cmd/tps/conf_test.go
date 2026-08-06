@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseBoolEnv(t *testing.T) {
@@ -221,6 +222,204 @@ func TestValidateChallengeLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// configEnvVars is every variable getenv reads, so a test can put the whole
+// environment in a known state instead of inheriting whatever the developer
+// running it happens to have exported.
+var configEnvVars = []string{
+	"BIND_ADDR", "TURNSTILE_SECRET_KEY", "TURNSTILE_SITE_KEY", "JWT_SIGNING_KEY",
+	"PROXY_TARGET", "LOG_DB_PATH", "LOG_RETENTION", "TEMPLATE_PATH", "TOKEN_LIFETIME",
+	"TOKEN_BIND_USER_AGENT", "TOKEN_REQUEST_BUDGET", "TOKEN_IP_SWITCH_COST",
+	"MAX_CHALLENGE_BODY", "MAX_CHALLENGE_CACHE", "ADMIN_SECRET",
+	"PROXY_TARGETS", "CHALLENGE_MODE",
+}
+
+// setConfigEnv sets the named variables and explicitly clears every other one
+// getenv looks at. t.Setenv restores the lot afterwards.
+func setConfigEnv(t *testing.T, vars map[string]string) {
+	t.Helper()
+	for _, name := range configEnvVars {
+		if val, ok := vars[name]; ok {
+			t.Setenv(name, val)
+			continue
+		}
+		t.Setenv(name, "")
+		os.Unsetenv(name)
+	}
+}
+
+// requiredEnv is the smallest configuration that starts: everything TPS
+// refuses to run without, and nothing else.
+func requiredEnv() map[string]string {
+	return map[string]string{
+		"BIND_ADDR":            ":8080",
+		"TURNSTILE_SECRET_KEY": "turnstile-secret",
+		"TURNSTILE_SITE_KEY":   "turnstile-site",
+		"JWT_SIGNING_KEY":      "signing-key",
+		"PROXY_TARGET":         "http://app:8080",
+	}
+}
+
+func TestGetenv(t *testing.T) {
+	t.Run("an unset optional setting takes its default", func(t *testing.T) {
+		setConfigEnv(t, requiredEnv())
+
+		conf, errs := getenv()
+		if len(errs) != 0 {
+			t.Fatalf("a complete configuration reported errors: %v", errs)
+		}
+
+		if conf.tokenLifetime != 4*time.Hour {
+			t.Errorf("tokenLifetime = %s, want 4h", conf.tokenLifetime)
+		}
+		if conf.logRetention != 48*time.Hour {
+			t.Errorf("logRetention = %s, want 48h", conf.logRetention)
+		}
+		if !conf.tokenBindUserAgent {
+			t.Error("tokenBindUserAgent = false, want true")
+		}
+		if conf.tokenRequestBudget != 1000 {
+			t.Errorf("tokenRequestBudget = %d, want 1000", conf.tokenRequestBudget)
+		}
+		if conf.tokenIPSwitchCost != 10 {
+			t.Errorf("tokenIPSwitchCost = %d, want 10", conf.tokenIPSwitchCost)
+		}
+		if conf.maxChallengeBody != defaultMaxChallengeBody {
+			t.Errorf("maxChallengeBody = %d, want %d", conf.maxChallengeBody, defaultMaxChallengeBody)
+		}
+		if conf.maxChallengeCache != defaultMaxChallengeCache {
+			t.Errorf("maxChallengeCache = %d, want %d", conf.maxChallengeCache, defaultMaxChallengeCache)
+		}
+		if conf.templatePath != "/var/local/tps/templates" {
+			t.Errorf("templatePath = %q, want the default", conf.templatePath)
+		}
+		// Unset means the feature is off, not that it's misconfigured
+		if conf.logDBPath != "" || conf.adminSecret != "" {
+			t.Errorf("logDBPath = %q and adminSecret = %q, want both empty", conf.logDBPath, conf.adminSecret)
+		}
+	})
+
+	t.Run("every setting is read from the environment", func(t *testing.T) {
+		var env = requiredEnv()
+		env["LOG_DB_PATH"] = "/var/lib/tps/events.db"
+		env["LOG_RETENTION"] = "72h"
+		env["TEMPLATE_PATH"] = "/srv/templates"
+		env["TOKEN_LIFETIME"] = "30m"
+		env["TOKEN_BIND_USER_AGENT"] = "false"
+		env["TOKEN_REQUEST_BUDGET"] = "50"
+		env["TOKEN_IP_SWITCH_COST"] = "3"
+		env["MAX_CHALLENGE_BODY"] = "2048"
+		env["MAX_CHALLENGE_CACHE"] = "1048576"
+		env["ADMIN_SECRET"] = "admin-secret"
+		setConfigEnv(t, env)
+
+		conf, errs := getenv()
+		if len(errs) != 0 {
+			t.Fatalf("a complete configuration reported errors: %v", errs)
+		}
+
+		var got = config{
+			bindAddr: conf.bindAddr, turnstileSecretKey: conf.turnstileSecretKey,
+			turnstileSiteKey: conf.turnstileSiteKey, jwtSigningKey: conf.jwtSigningKey,
+			proxyTarget: conf.proxyTarget, logDBPath: conf.logDBPath,
+			logRetention: conf.logRetention, templatePath: conf.templatePath,
+			tokenLifetime: conf.tokenLifetime, tokenBindUserAgent: conf.tokenBindUserAgent,
+			tokenRequestBudget: conf.tokenRequestBudget, tokenIPSwitchCost: conf.tokenIPSwitchCost,
+			maxChallengeBody: conf.maxChallengeBody, maxChallengeCache: conf.maxChallengeCache,
+			adminSecret: conf.adminSecret,
+		}
+		var want = config{
+			bindAddr: ":8080", turnstileSecretKey: "turnstile-secret",
+			turnstileSiteKey: "turnstile-site", jwtSigningKey: "signing-key",
+			proxyTarget: "http://app:8080", logDBPath: "/var/lib/tps/events.db",
+			logRetention: 72 * time.Hour, templatePath: "/srv/templates",
+			tokenLifetime: 30 * time.Minute, tokenBindUserAgent: false,
+			tokenRequestBudget: 50, tokenIPSwitchCost: 3,
+			maxChallengeBody: 2048, maxChallengeCache: 1048576,
+			adminSecret: "admin-secret",
+		}
+		if got != want {
+			t.Errorf("config =\n%+v\nwant\n%+v", got, want)
+		}
+	})
+
+	t.Run("a relative template path is made absolute", func(t *testing.T) {
+		var env = requiredEnv()
+		env["TEMPLATE_PATH"] = "templates"
+		setConfigEnv(t, env)
+
+		conf, _ := getenv()
+		if !filepath.IsAbs(conf.templatePath) {
+			t.Errorf("templatePath = %q, want an absolute path", conf.templatePath)
+		}
+	})
+
+	// Zero means different things to the two duration settings, which is the
+	// distinction a shared parser is most likely to flatten
+	t.Run("zero retention keeps events forever", func(t *testing.T) {
+		var env = requiredEnv()
+		env["LOG_RETENTION"] = "0"
+		setConfigEnv(t, env)
+
+		conf, errs := getenv()
+		if len(errs) != 0 {
+			t.Fatalf("LOG_RETENTION=0 reported errors: %v", errs)
+		}
+		if conf.logRetention != 0 {
+			t.Errorf("logRetention = %s, want 0", conf.logRetention)
+		}
+	})
+
+	t.Run("zero token lifetime is refused", func(t *testing.T) {
+		var env = requiredEnv()
+		env["TOKEN_LIFETIME"] = "0"
+		setConfigEnv(t, env)
+
+		conf, errs := getenv()
+		if len(errs) != 1 || !strings.Contains(errs[0], "TOKEN_LIFETIME") {
+			t.Fatalf("errs = %v, want one complaint about TOKEN_LIFETIME", errs)
+		}
+		if conf.tokenLifetime != 4*time.Hour {
+			t.Errorf("tokenLifetime = %s, want the default to stand", conf.tokenLifetime)
+		}
+	})
+
+	t.Run("every missing requirement is reported at once", func(t *testing.T) {
+		setConfigEnv(t, nil)
+
+		var _, errs = getenv()
+		for _, want := range []string{
+			"BIND_ADDR", "TURNSTILE_SECRET_KEY", "TURNSTILE_SITE_KEY",
+			"JWT_SIGNING_KEY", "PROXY_TARGET",
+		} {
+			if !strings.Contains(strings.Join(errs, "; "), want) {
+				t.Errorf("errs %v does not mention %s", errs, want)
+			}
+		}
+	})
+
+	t.Run("a bad proxy target is reported as one", func(t *testing.T) {
+		var env = requiredEnv()
+		env["PROXY_TARGET"] = "http://app:8080/base"
+		setConfigEnv(t, env)
+
+		var _, errs = getenv()
+		if len(errs) != 1 || !strings.HasPrefix(errs[0], "PROXY_TARGET: ") {
+			t.Fatalf("errs = %v, want one PROXY_TARGET complaint", errs)
+		}
+	})
+
+	t.Run("a removed variable still set stops startup", func(t *testing.T) {
+		var env = requiredEnv()
+		env["CHALLENGE_MODE"] = "navigation"
+		setConfigEnv(t, env)
+
+		var _, errs = getenv()
+		if len(errs) != 1 || !strings.Contains(errs[0], "CHALLENGE_MODE") {
+			t.Fatalf("errs = %v, want one CHALLENGE_MODE complaint", errs)
+		}
+	})
 }
 
 func TestRemovedVarErrors(t *testing.T) {

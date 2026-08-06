@@ -99,84 +99,109 @@ func applyEnvFile() {
 	}
 }
 
-func getenv() {
+// config is everything TPS reads out of the environment. It is built and
+// validated in one place ([getenv]) and handed to the server as a value, so
+// there is no window where half of it is set and nothing to consult but
+// package state.
+type config struct {
+	bindAddr           string
+	turnstileSecretKey string
+	turnstileSiteKey   string
+	jwtSigningKey      string
+	proxyTarget        string
+	logDBPath          string
+	logRetention       time.Duration
+	templatePath       string
+	tokenLifetime      time.Duration
+	tokenBindUserAgent bool
+	tokenRequestBudget int
+	tokenIPSwitchCost  int
+	maxChallengeBody   int64
+	maxChallengeCache  int64
+	adminSecret        string
+}
+
+// getenv reads the configuration from the environment (after applying any
+// -env-file), returning it alongside every problem found rather than the
+// first. An operator fixing a config file should get the whole list in one
+// run, so the caller reports them together and exits.
+func getenv() (config, []string) {
 	applyEnvFile()
 
-	bindAddr = os.Getenv("BIND_ADDR")
-	turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")
-	turnstileSiteKey = os.Getenv("TURNSTILE_SITE_KEY")
-	jwtSigningKey = os.Getenv("JWT_SIGNING_KEY")
-	logDBPath = os.Getenv("LOG_DB_PATH")
-	templatePath = os.Getenv("TEMPLATE_PATH")
-	adminSecret = os.Getenv("ADMIN_SECRET")
-
+	var conf config
 	var errs []string
-	if bindAddr == "" {
+
+	conf.bindAddr = os.Getenv("BIND_ADDR")
+	conf.turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")
+	conf.turnstileSiteKey = os.Getenv("TURNSTILE_SITE_KEY")
+	conf.jwtSigningKey = os.Getenv("JWT_SIGNING_KEY")
+	conf.logDBPath = os.Getenv("LOG_DB_PATH")
+	conf.templatePath = os.Getenv("TEMPLATE_PATH")
+	conf.adminSecret = os.Getenv("ADMIN_SECRET")
+
+	if conf.bindAddr == "" {
 		errs = append(errs, "BIND_ADDR is not set")
 	}
-	if turnstileSecretKey == "" {
+	if conf.turnstileSecretKey == "" {
 		errs = append(errs, "TURNSTILE_SECRET_KEY is not set")
 	}
-	if turnstileSiteKey == "" {
+	if conf.turnstileSiteKey == "" {
 		errs = append(errs, "TURNSTILE_SITE_KEY is not set")
 	}
-	if jwtSigningKey == "" {
+	if conf.jwtSigningKey == "" {
 		errs = append(errs, "JWT_SIGNING_KEY is not set")
 	}
 
-	proxyTarget = os.Getenv("PROXY_TARGET")
-	if proxyTarget == "" {
+	conf.proxyTarget = os.Getenv("PROXY_TARGET")
+	if conf.proxyTarget == "" {
 		errs = append(errs, "PROXY_TARGET is not set")
-	} else if err := validateTargetURL(proxyTarget); err != nil {
+	} else if err := validateTargetURL(conf.proxyTarget); err != nil {
 		errs = append(errs, "PROXY_TARGET: "+err.Error())
 	}
 
 	errs = append(errs, removedVarErrors()...)
 
-	tokenLifetime = 4 * time.Hour
+	conf.tokenLifetime = 4 * time.Hour
 	if raw := os.Getenv("TOKEN_LIFETIME"); raw != "" {
 		var d, derr = time.ParseDuration(raw)
 		if derr != nil || d <= 0 {
 			errs = append(errs, fmt.Sprintf("TOKEN_LIFETIME %q must be a positive Go duration such as 30m or 2h", raw))
 		} else {
-			tokenLifetime = d
+			conf.tokenLifetime = d
 		}
 	}
 
-	logRetention = 48 * time.Hour
+	conf.logRetention = 48 * time.Hour
 	if raw := os.Getenv("LOG_RETENTION"); raw != "" {
 		var d, derr = time.ParseDuration(raw)
 		if derr != nil || d < 0 {
 			errs = append(errs, fmt.Sprintf(`LOG_RETENTION %q must be a non-negative Go duration such as 48h, or 0 to keep events forever`, raw))
 		} else {
-			logRetention = d
+			conf.logRetention = d
 		}
 	}
 
-	tokenBindUserAgent = parseBoolEnv("TOKEN_BIND_USER_AGENT", true, &errs)
-	tokenRequestBudget = parseIntEnv("TOKEN_REQUEST_BUDGET", 1000, 0, &errs)
-	tokenIPSwitchCost = parseIntEnv("TOKEN_IP_SWITCH_COST", 10, 1, &errs)
+	conf.tokenBindUserAgent = parseBoolEnv("TOKEN_BIND_USER_AGENT", true, &errs)
+	conf.tokenRequestBudget = parseIntEnv("TOKEN_REQUEST_BUDGET", 1000, 0, &errs)
+	conf.tokenIPSwitchCost = parseIntEnv("TOKEN_IP_SWITCH_COST", 10, 1, &errs)
 
-	maxChallengeBody = int64(parseIntEnv("MAX_CHALLENGE_BODY", defaultMaxChallengeBody, 0, &errs))
-	maxChallengeCache = int64(parseIntEnv("MAX_CHALLENGE_CACHE", defaultMaxChallengeCache, 0, &errs))
-	if cerr := validateChallengeLimits(maxChallengeBody, maxChallengeCache); cerr != nil {
+	conf.maxChallengeBody = int64(parseIntEnv("MAX_CHALLENGE_BODY", defaultMaxChallengeBody, 0, &errs))
+	conf.maxChallengeCache = int64(parseIntEnv("MAX_CHALLENGE_CACHE", defaultMaxChallengeCache, 0, &errs))
+	if cerr := validateChallengeLimits(conf.maxChallengeBody, conf.maxChallengeCache); cerr != nil {
 		errs = append(errs, cerr.Error())
 	}
 
-	if templatePath == "" {
-		templatePath = "/var/local/tps/templates"
+	if conf.templatePath == "" {
+		conf.templatePath = "/var/local/tps/templates"
 	}
 
 	var err error
-	templatePath, err = filepath.Abs(templatePath)
+	conf.templatePath, err = filepath.Abs(conf.templatePath)
 	if err != nil {
 		errs = append(errs, "Unable to get absolute path to templates: "+err.Error())
 	}
 
-	if len(errs) != 0 {
-		logger.Error("Cannot start server", "error", strings.Join(errs, "; "))
-		os.Exit(1)
-	}
+	return conf, errs
 }
 
 // parseBoolEnv reads the named env var as a boolean, returning def when the
