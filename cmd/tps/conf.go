@@ -161,25 +161,13 @@ func getenv() (config, []string) {
 
 	errs = append(errs, removedVarErrors()...)
 
-	conf.tokenLifetime = 4 * time.Hour
-	if raw := os.Getenv("TOKEN_LIFETIME"); raw != "" {
-		var d, derr = time.ParseDuration(raw)
-		if derr != nil || d <= 0 {
-			errs = append(errs, fmt.Sprintf("TOKEN_LIFETIME %q must be a positive Go duration such as 30m or 2h", raw))
-		} else {
-			conf.tokenLifetime = d
-		}
-	}
-
-	conf.logRetention = 48 * time.Hour
-	if raw := os.Getenv("LOG_RETENTION"); raw != "" {
-		var d, derr = time.ParseDuration(raw)
-		if derr != nil || d < 0 {
-			errs = append(errs, fmt.Sprintf(`LOG_RETENTION %q must be a non-negative Go duration such as 48h, or 0 to keep events forever`, raw))
-		} else {
-			conf.logRetention = d
-		}
-	}
+	// A lifetime of zero would issue tokens that expire the moment they're
+	// minted, so the smallest value worth accepting is one tick above it. Zero
+	// is meaningful for retention, though: it means "keep events forever".
+	conf.tokenLifetime = parseDurationEnv("TOKEN_LIFETIME", 4*time.Hour, time.Nanosecond,
+		"a positive Go duration such as 30m or 2h", &errs)
+	conf.logRetention = parseDurationEnv("LOG_RETENTION", 48*time.Hour, 0,
+		"a non-negative Go duration such as 48h, or 0 to keep events forever", &errs)
 
 	conf.tokenBindUserAgent = parseBoolEnv("TOKEN_BIND_USER_AGENT", true, &errs)
 	conf.tokenRequestBudget = parseIntEnv("TOKEN_REQUEST_BUDGET", 1000, 0, &errs)
@@ -217,6 +205,24 @@ func parseBoolEnv(name string, def bool, errs *[]string) bool {
 		return def
 	}
 	return b
+}
+
+// parseDurationEnv reads the named env var as a Go duration no smaller than
+// minVal, returning def when the var is unset. An invalid or out-of-range
+// value appends to errs and returns def. The callers disagree about whether
+// zero is a legitimate value, so each supplies its own description of what a
+// valid one looks like rather than sharing a message that fits neither.
+func parseDurationEnv(name string, def, minVal time.Duration, valid string, errs *[]string) time.Duration {
+	var raw = os.Getenv(name)
+	if raw == "" {
+		return def
+	}
+	var d, err = time.ParseDuration(raw)
+	if err != nil || d < minVal {
+		*errs = append(*errs, fmt.Sprintf("%s %q must be %s", name, raw, valid))
+		return def
+	}
+	return d
 }
 
 // parseIntEnv reads the named env var as an integer no smaller than minVal,
