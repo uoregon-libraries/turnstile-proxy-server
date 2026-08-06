@@ -37,14 +37,22 @@ func TestSetProxyTarget(t *testing.T) {
 	}
 }
 
-// signAndParse signs the given claims with the server's key and parses the
-// result back into the *jwt.Token form the server's checks operate on
-func signAndParse(t *testing.T, s *Server, claims jwt.MapClaims) *jwt.Token {
+// signCookie signs the given claims with the server's key and returns the raw
+// token string, ready to be sent as the session cookie
+func signCookie(t *testing.T, s *Server, claims jwt.MapClaims) string {
 	t.Helper()
 	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.jwtSigningKey)
 	if err != nil {
 		t.Fatalf("signing token: %v", err)
 	}
+	return raw
+}
+
+// signAndParse signs the given claims with the server's key and parses the
+// result back into the *jwt.Token form the server's checks operate on
+func signAndParse(t *testing.T, s *Server, claims jwt.MapClaims) *jwt.Token {
+	t.Helper()
+	var raw = signCookie(t, s, claims)
 	token, err := jwt.Parse(raw, func(*jwt.Token) (interface{}, error) { return s.jwtSigningKey, nil })
 	if err != nil {
 		t.Fatalf("parsing token: %v", err)
@@ -357,6 +365,175 @@ func TestHandleProxyLogsEvents(t *testing.T) {
 	}
 }
 
+// bindingFor returns the binding hash s expects from a client presenting the
+// given User-Agent, so a test can mint a token that matches the client it will
+// arrive with -- or deliberately doesn't.
+func bindingFor(t *testing.T, s *Server, ua string) string {
+	t.Helper()
+	return s.clientFingerprint(newTestContext(t, ua, "192.0.2.55"))
+}
+
+// TestHandleProxyLogsDecisionEvents covers the analytics side of every way a
+// cookie can be judged. The response side of these decisions is well covered
+// elsewhere -- what isn't is the event each one records, and an event with the
+// wrong reason (or a missing jti) is invisible: TPS still does the right thing
+// to the request, and the log quietly stops meaning what the reports say it
+// means.
+func TestHandleProxyLogsDecisionEvents(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("backend response"))
+	}))
+	defer backend.Close()
+
+	// The client IP TPS sees comes from X-Forwarded-For: the test client
+	// connects over loopback, which is a trusted proxy, so the header is
+	// honored. It's the only way to make one client look like it moved.
+	const firstIP = "203.0.113.9"
+	const movedIP = "198.51.100.7"
+	const clientUA = "tps-test-agent/1.0"
+
+	tests := []struct {
+		name string
+		// prepare mints the cookie the request carries and primes whatever
+		// server-side state the case needs
+		prepare      func(t *testing.T, s *Server) string
+		clientIP     string
+		wantStatus   int
+		wantOutcome  string
+		wantReason   string
+		wantJTI      string
+		wantIPSwitch bool
+	}{
+		{
+			name: "a live token is proxied",
+			prepare: func(t *testing.T, s *Server) string {
+				return signCookie(t, s, jwt.MapClaims{
+					"jti": "tok-live",
+					"exp": time.Now().Add(time.Hour).Unix(),
+					"bnd": bindingFor(t, s, clientUA),
+				})
+			},
+			clientIP:    firstIP,
+			wantStatus:  http.StatusOK,
+			wantOutcome: db.OutcomeProxied,
+			wantReason:  db.ReasonValidToken,
+			wantJTI:     "tok-live",
+		},
+		{
+			// A moved client is charged the surcharge and let through, and the
+			// event has to say so: the switch flag is the only record that the
+			// budget was spent faster than one-per-request.
+			name: "a token whose client moved is surcharged, not refused",
+			prepare: func(t *testing.T, s *Server) string {
+				s.budgetCache.Set("tok-moved", &budgetState{lastIP: s.maskClientIP(firstIP)}, time.Hour)
+				return signCookie(t, s, jwt.MapClaims{
+					"jti": "tok-moved",
+					"exp": time.Now().Add(time.Hour).Unix(),
+					"bnd": bindingFor(t, s, clientUA),
+				})
+			},
+			clientIP:     movedIP,
+			wantStatus:   http.StatusOK,
+			wantOutcome:  db.OutcomeProxied,
+			wantReason:   db.ReasonValidToken,
+			wantJTI:      "tok-moved",
+			wantIPSwitch: true,
+		},
+		{
+			// Nothing to correlate: the cookie never parsed, so there is no jti
+			// to tie this challenge to a session
+			name:        "an unparseable cookie is challenged",
+			prepare:     func(*testing.T, *Server) string { return "not-a-jwt" },
+			clientIP:    firstIP,
+			wantStatus:  http.StatusForbidden,
+			wantOutcome: db.OutcomeChallenged,
+			wantReason:  db.ReasonInvalidJWT,
+		},
+		{
+			name: "a token bound to another client is challenged",
+			prepare: func(t *testing.T, s *Server) string {
+				return signCookie(t, s, jwt.MapClaims{
+					"jti": "tok-elsewhere",
+					"exp": time.Now().Add(time.Hour).Unix(),
+					"bnd": bindingFor(t, s, "some-other-agent/9.9"),
+				})
+			},
+			clientIP:    firstIP,
+			wantStatus:  http.StatusForbidden,
+			wantOutcome: db.OutcomeChallenged,
+			wantReason:  db.ReasonClientMismatch,
+			wantJTI:     "tok-elsewhere",
+		},
+		{
+			name: "a spent budget is challenged",
+			prepare: func(t *testing.T, s *Server) string {
+				s.budgetCache.Set("tok-spent",
+					&budgetState{spent: s.requestBudget, lastIP: s.maskClientIP(firstIP)}, time.Hour)
+				return signCookie(t, s, jwt.MapClaims{
+					"jti": "tok-spent",
+					"exp": time.Now().Add(time.Hour).Unix(),
+					"bnd": bindingFor(t, s, clientUA),
+				})
+			},
+			clientIP:    firstIP,
+			wantStatus:  http.StatusForbidden,
+			wantOutcome: db.OutcomeChallenged,
+			wantReason:  db.ReasonBudgetExhausted,
+			wantJTI:     "tok-spent",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{}
+			s := newTestServerWithStore(t, backend.URL, store)
+
+			// A real listener rather than a recorder: the proxied cases go out
+			// through ReverseProxy, which needs more of a ResponseWriter than
+			// httptest.NewRecorder provides.
+			tps := httptest.NewServer(s.r)
+			defer tps.Close()
+
+			req, err := http.NewRequest("GET", tps.URL+"/protected/data", nil)
+			if err != nil {
+				t.Fatalf("building request: %v", err)
+			}
+			req.Header.Set("User-Agent", clientUA)
+			req.Header.Set("X-Forwarded-For", tc.clientIP)
+			req.AddCookie(&http.Cookie{Name: cookieName, Value: tc.prepare(t, s)})
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("sending request: %v", err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+
+			events := store.snapshot()
+			if len(events) != 1 {
+				t.Fatalf("got %d events, want 1: %+v", len(events), events)
+			}
+			var e = events[0]
+			if e.Outcome != tc.wantOutcome || e.Reason != tc.wantReason {
+				t.Errorf("event = {%q, %q}, want {%q, %q}",
+					e.Outcome, e.Reason, tc.wantOutcome, tc.wantReason)
+			}
+			if e.JTI != tc.wantJTI {
+				t.Errorf("event jti = %q, want %q", e.JTI, tc.wantJTI)
+			}
+			if e.IPSwitch != tc.wantIPSwitch {
+				t.Errorf("event ipSwitch = %v, want %v", e.IPSwitch, tc.wantIPSwitch)
+			}
+			if e.MaskedIP != s.maskClientIP(tc.clientIP) {
+				t.Errorf("event maskedIP = %q, want %q", e.MaskedIP, s.maskClientIP(tc.clientIP))
+			}
+		})
+	}
+}
+
 // TestChallengesEveryRequestKind guards the removal of navigation-only mode:
 // anything routed to TPS without a valid token gets challenged, whatever the
 // browser says the request is for. Keeping background requests away from TPS
@@ -413,6 +590,12 @@ func TestChallengesEveryRequestKind(t *testing.T) {
 // request, and gin's form helpers drain the body to answer. If the body isn't
 // buffered first, a challenged form submission is cached empty and replayed to
 // the backend with the user's data gone.
+//
+// Each case then solves its challenge and checks what the backend actually
+// received, because caching the body is only half the promise. A non-GET
+// original is the one kind that gets replayed inline -- a GET becomes a
+// redirect -- so this is the only path that carries a user's submission
+// upstream, and the only one where losing it loses data.
 func TestChallengedPostKeepsItsBody(t *testing.T) {
 	var multipartBody = "--XX\r\nContent-Disposition: form-data; name=\"q\"\r\n\r\nrye bread\r\n--XX--\r\n"
 
@@ -429,7 +612,23 @@ func TestChallengedPostKeepsItsBody(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+			var replayed struct {
+				sync.Mutex
+				seen        bool
+				method      string
+				contentType string
+				body        string
+			}
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				replayed.Lock()
+				defer replayed.Unlock()
+				replayed.seen = true
+				replayed.method = r.Method
+				replayed.contentType = r.Header.Get("Content-Type")
+				replayed.body = string(body)
+				w.Write([]byte("backend got it"))
+			}))
 			defer backend.Close()
 			s := newTestServer(t, backend.URL)
 
@@ -457,6 +656,53 @@ func TestChallengedPostKeepsItsBody(t *testing.T) {
 			}
 			if cached[0].Method != http.MethodPost {
 				t.Errorf("cached method = %q, want POST", cached[0].Method)
+			}
+
+			// Now solve it, and see what the backend gets.
+			cloudflare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"success": true}`))
+			}))
+			defer cloudflare.Close()
+			s.verifyURL = cloudflare.URL
+
+			var requestID string
+			for id := range s.requestCache.Items() {
+				requestID = id
+			}
+
+			// Through a real listener rather than the recorder above: the
+			// inline replay goes out through ReverseProxy, which needs more of
+			// a ResponseWriter than httptest.NewRecorder provides.
+			tps := httptest.NewServer(s.r)
+			defer tps.Close()
+
+			// The challenge form posts back to the URL it interrupted
+			solved, err := http.PostForm(tps.URL+"/search", url.Values{
+				"cf-turnstile-response": {"solved"},
+				"request_id":            {requestID},
+				"original_method":       {http.MethodPost},
+			})
+			if err != nil {
+				t.Fatalf("solving the challenge: %v", err)
+			}
+			defer solved.Body.Close()
+
+			replayed.Lock()
+			defer replayed.Unlock()
+			if !replayed.seen {
+				t.Fatalf("the backend never saw the replayed request (status %d)", solved.StatusCode)
+			}
+			if replayed.method != http.MethodPost {
+				t.Errorf("replayed method = %q, want POST", replayed.method)
+			}
+			if replayed.body != tc.body {
+				t.Errorf("replayed body = %q (%d bytes), want %q (%d bytes)",
+					replayed.body, len(replayed.body), tc.body, len(tc.body))
+			}
+			// Without the original Content-Type the backend can't parse the
+			// body it was just handed, so the bytes surviving isn't enough
+			if replayed.contentType != tc.contentType {
+				t.Errorf("replayed Content-Type = %q, want %q", replayed.contentType, tc.contentType)
 			}
 		})
 	}
