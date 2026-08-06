@@ -210,19 +210,28 @@ func parseIntEnv(name string, def, minVal int, errs *[]string) int {
 	return n
 }
 
-// validateTargetURL rejects a backend URL that can't be proxied to: it has to
-// parse, it has to name a scheme and host, and it has to be *only* a scheme and
-// host. TPS forwards each request's own path, query, and credentials to the
-// backend unchanged; anything of that sort on the target itself is dropped on
-// the floor. Accepting it would mean accepting a config that quietly does
-// something other than what it says, so it's a startup error instead.
+// validateTargetURL reports whether the given backend URL can be proxied to.
+// It is [parseProxyTarget] without the parsed result, for the startup check
+// that only cares whether the configured value is usable.
 func validateTargetURL(target string) error {
+	var _, err = parseProxyTarget(target)
+	return err
+}
+
+// parseProxyTarget parses a backend URL and rejects one that can't be proxied
+// to: it has to parse, it has to name a scheme and host, and it has to be
+// *only* a scheme and host. TPS forwards each request's own path, query, and
+// credentials to the backend unchanged; anything of that sort on the target
+// itself is dropped on the floor. Accepting it would mean accepting a config
+// that quietly does something other than what it says, so it's an error
+// instead.
+func parseProxyTarget(target string) (*url.URL, error) {
 	var parsed, err = url.Parse(target)
 	if err != nil {
-		return fmt.Errorf("invalid URL %q: %s", target, err)
+		return nil, fmt.Errorf("invalid URL %q: %s", target, err)
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("URL %q must include scheme and host, e.g. http://app:8080", target)
+		return nil, fmt.Errorf("URL %q must include scheme and host, e.g. http://app:8080", target)
 	}
 
 	// A bare trailing slash is the same target with nothing added, so it's
@@ -241,12 +250,12 @@ func validateTargetURL(target string) error {
 		extra = append(extra, "credentials")
 	}
 	if len(extra) > 0 {
-		return fmt.Errorf("URL %q must be only a scheme and host, but it also has %s. TPS "+
+		return nil, fmt.Errorf("URL %q must be only a scheme and host, but it also has %s. TPS "+
 			"forwards each request's own path and query to the backend and ignores anything "+
 			"extra here, so use %s://%s and have your front proxy rewrite the path if the "+
 			"backend needs a prefix", target, strings.Join(extra, " and "), parsed.Scheme, parsed.Host)
 	}
-	return nil
+	return parsed, nil
 }
 
 // validateChallengeLimits rejects a pair of challenge memory limits that can't

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/gin-gonic/gin/render"
@@ -75,6 +77,21 @@ func (ts *templateStore) addString(name, src string) error {
 	defer ts.mu.Unlock()
 	ts.entries[name] = &templateEntry{tmpl: tmpl}
 	return nil
+}
+
+// has reports whether a template is registered under this name, which is what
+// template selection needs to know and the only thing it needs to know.
+func (ts *templateStore) has(name string) bool {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.entries[name] != nil
+}
+
+// names lists every registered template, sorted, for startup logging.
+func (ts *templateStore) names() []string {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return slices.Sorted(maps.Keys(ts.entries))
 }
 
 // build expands the challenge markup in src and parses the result. complain

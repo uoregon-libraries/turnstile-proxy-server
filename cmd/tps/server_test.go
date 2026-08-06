@@ -155,7 +155,7 @@ func TestClientFingerprint(t *testing.T) {
 // charged calls chargeToken and returns only whether the request was allowed;
 // most budget tests don't care about the surcharge flag.
 func charged(s *Server, token *jwt.Token, c *gin.Context) bool {
-	var allowed, _ = s.chargeToken(token, c)
+	var allowed, _ = s.chargeToken(claimsOf(token), c)
 	return allowed
 }
 
@@ -1060,10 +1060,10 @@ func TestTokenMatchesClient(t *testing.T) {
 	}
 	solver := newTestContext(t, "Mozilla/5.0", "192.0.2.55")
 
-	bound := signAndParse(t, s, jwt.MapClaims{
+	bound := claimsOf(signAndParse(t, s, jwt.MapClaims{
 		"exp": time.Now().Add(time.Hour).Unix(),
 		"bnd": s.clientFingerprint(solver),
-	})
+	}))
 
 	if !s.tokenMatchesClient(bound, solver) {
 		t.Error("token rejected for the client that solved the challenge")
@@ -1075,7 +1075,7 @@ func TestTokenMatchesClient(t *testing.T) {
 		t.Error("token accepted for a client with a different IP")
 	}
 
-	unbound := signAndParse(t, s, jwt.MapClaims{"exp": time.Now().Add(time.Hour).Unix()})
+	unbound := claimsOf(signAndParse(t, s, jwt.MapClaims{"exp": time.Now().Add(time.Hour).Unix()}))
 	if s.tokenMatchesClient(unbound, solver) {
 		t.Error("legacy token without a binding claim accepted while binding is enabled")
 	}
@@ -1351,8 +1351,8 @@ func TestLoadCustomTemplatesTrailingSlash(t *testing.T) {
 	}) + "/")
 
 	for _, want := range []string{"challenge", "example.test/challenge"} {
-		if s.templates[want] == "" {
-			t.Errorf("template %q was not registered; got %v", want, s.templates)
+		if !s.render.has(want) {
+			t.Errorf("template %q was not registered; got %v", want, s.render.names())
 		}
 	}
 }

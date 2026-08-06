@@ -119,7 +119,6 @@ type Server struct {
 	budgetCache  *cache.Cache
 	requestCache *cache.Cache
 	proxyTarget  *url.URL
-	templates    map[string]string
 
 	maxChallengeBody  int64
 	maxChallengeCache int64
@@ -166,7 +165,6 @@ func NewServer(router *gin.Engine, store db.Store) *Server {
 		ipSwitchCost:  10,
 		budgetCache:   cache.New(time.Hour, 10*time.Minute),
 		requestCache:  requestCache,
-		templates:     make(map[string]string),
 
 		maxChallengeBody:  defaultMaxChallengeBody,
 		maxChallengeCache: defaultMaxChallengeCache,
@@ -219,12 +217,14 @@ func (s *Server) SetSiteKey(k string) *Server {
 //
 // The target is a scheme and host only. Each request keeps its own path and
 // query when it goes upstream, so a path on the target would have nowhere to
-// go; validateTargetURL refuses one at startup rather than let it look like a
-// mount point it isn't.
+// go; parseProxyTarget refuses one rather than let it look like a mount point
+// it isn't. That is the same check startup runs against PROXY_TARGET, so a
+// Server built directly (in a test, say) can't be given a target the
+// configured path would have rejected.
 func (s *Server) SetProxyTarget(target string) *Server {
-	var u, err = url.Parse(target)
+	var u, err = parseProxyTarget(target)
 	if err != nil {
-		panic(fmt.Sprintf("invalid proxy target %q: %s", target, err))
+		panic(fmt.Sprintf("invalid proxy target: %s", err))
 	}
 	s.proxyTarget = u
 	return s
@@ -340,24 +340,47 @@ func (s *Server) clientFingerprint(c *gin.Context) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// tokenMatchesClient reports whether the parsed token's binding claim matches
-// the client making the current request. Tokens issued before binding was
-// enabled (or with a different binding config) fail the check and force a new
+// tokenClaims is what TPS reads out of a session token: the id that ties a
+// session's events and budget together, and the binding fingerprint of the
+// client that solved the challenge.
+type tokenClaims struct {
+	jti string
+	bnd string
+}
+
+// claimsOf pulls those claims out of a parsed token, once, so the checks that
+// follow don't each repeat the assertion. A token whose claims aren't a
+// jwt.MapClaims, or that predates one of these entries, yields the zero value
+// — which every caller already treats as unusable. So does a nil token, which
+// is what jwt.Parse hands back for input malformed enough that there was
+// never a token to speak of.
+func claimsOf(token *jwt.Token) tokenClaims {
+	if token == nil {
+		return tokenClaims{}
+	}
+	var m, ok = token.Claims.(jwt.MapClaims)
+	if !ok {
+		return tokenClaims{}
+	}
+	var claims tokenClaims
+	claims.jti, _ = m["jti"].(string)
+	claims.bnd, _ = m["bnd"].(string)
+	return claims
+}
+
+// tokenMatchesClient reports whether the token's binding claim matches the
+// client making the current request. Tokens issued before binding was enabled
+// (or with a different binding config) fail the check and force a new
 // challenge.
-func (s *Server) tokenMatchesClient(token *jwt.Token, c *gin.Context) bool {
+func (s *Server) tokenMatchesClient(claims tokenClaims, c *gin.Context) bool {
 	var want = s.clientFingerprint(c)
 	if want == "" {
 		return true
 	}
 
-	var claims, ok = token.Claims.(jwt.MapClaims)
-	if !ok {
-		return false
-	}
-	var got, _ = claims["bnd"].(string)
-	if got != want {
+	if claims.bnd != want {
 		s.logger.Debug("Token binding mismatch",
-			"want", want, "got", got, "clientIP", c.ClientIP(),
+			"want", want, "got", claims.bnd, "clientIP", c.ClientIP(),
 			"userAgent", c.Request.UserAgent())
 		return false
 	}
@@ -373,16 +396,12 @@ func (s *Server) tokenMatchesClient(token *jwt.Token, c *gin.Context) bool {
 // restart it is rebuilt on first sight of a token, giving that token a fresh
 // budget. Tokens without a "jti" claim (issued before budgets existed) are
 // rejected so they can't dodge the limit.
-func (s *Server) chargeToken(token *jwt.Token, c *gin.Context) (allowed, surcharged bool) {
+func (s *Server) chargeToken(claims tokenClaims, c *gin.Context) (allowed, surcharged bool) {
 	if s.requestBudget <= 0 {
 		return true, false
 	}
 
-	var claims, ok = token.Claims.(jwt.MapClaims)
-	if !ok {
-		return false, false
-	}
-	var jti, _ = claims["jti"].(string)
+	var jti = claims.jti
 	if jti == "" {
 		return false, false
 	}
@@ -414,29 +433,46 @@ func (s *Server) chargeToken(token *jwt.Token, c *gin.Context) (allowed, surchar
 	return true, switched
 }
 
-// baseEvent captures the request dimensions common to every logged decision.
-// Callers set Outcome, Reason, and (where applicable) JTI and IPSwitch.
-func (s *Server) baseEvent(c *gin.Context) db.Event {
-	return db.Event{
-		Timestamp: time.Now(),
-		ClientIP:  c.ClientIP(),
-		MaskedIP:  s.maskClientIP(c.ClientIP()),
-		Host:      c.Request.Host,
-		Path:      c.Request.URL.Path,
-		Method:    c.Request.Method,
-		UserAgent: c.Request.UserAgent(),
-	}
+// fillEvent adds the request's own dimensions to a decision event, leaving
+// what was decided (Outcome, Reason, and where applicable JTI and IPSwitch) to
+// the caller.
+func (s *Server) fillEvent(c *gin.Context, e db.Event) db.Event {
+	var ip = c.ClientIP()
+	e.Timestamp = time.Now()
+	e.ClientIP = ip
+	e.MaskedIP = s.maskClientIP(ip)
+	e.Host = c.Request.Host
+	e.Path = c.Request.URL.Path
+	e.Method = c.Request.Method
+	e.UserAgent = c.Request.UserAgent()
+	return e
 }
 
-// jtiOf returns the token's "jti" claim, or "" if absent. Used to correlate a
-// session's events across requests.
-func jtiOf(token *jwt.Token) string {
-	var claims, ok = token.Claims.(jwt.MapClaims)
-	if !ok {
-		return ""
+// logDecision records one decision event: the caller says only what it
+// decided, and the request's dimensions are filled in here so no call site can
+// forget one. A caller that can't know its outcome until after it has acted on
+// the request builds the event with fillEvent first and logs it when it knows
+// — see the verification path in handleProxy.
+func (s *Server) logDecision(c *gin.Context, e db.Event) {
+	s.db.LogEvent(s.fillEvent(c, e))
+}
+
+// addTemplate registers one template file under the given name. A core
+// template that won't load is fatal — without it TPS has no challenge page to
+// serve, and a gate that can't challenge isn't a gate — while a custom one is
+// skipped, because the core template it would have overridden still covers
+// that path.
+func (s *Server) addTemplate(name string, af afero.Fs, pth string, fatal bool) {
+	s.logger.Debug("Adding template", "name", name, "path", pth)
+	var err = s.render.addFile(name, af, pth)
+	if err == nil {
+		return
 	}
-	var jti, _ = claims["jti"].(string)
-	return jti
+	if fatal {
+		s.logger.Error("Cannot load core template", "name", name, "path", pth, "error", err)
+		panic("Fatal error, cannot continue without templates")
+	}
+	s.logger.Error("Cannot load custom template, skipping it", "name", name, "path", pth, "error", err)
 }
 
 // LoadCoreTemplates is a general-case helper to load either from local disk
@@ -463,17 +499,9 @@ func (s *Server) LoadCoreTemplates(pattern string, fsys fs.FS) {
 	for _, pth := range templates {
 		if strings.HasSuffix(pth, ".go.html") {
 			var name = "core/" + strings.Replace(filepath.Base(pth), ".go.html", "", 1)
-			s.logger.Debug("Adding core template", "name", name, "path", pth)
-			var addErr = s.render.addFile(name, af, pth)
-			if addErr != nil {
-				s.logger.Error("Cannot load core template", "from", from, "path", pth, "error", addErr)
-				panic("Fatal error, cannot continue without templates")
-			}
-			s.templates[name] = pth
+			s.addTemplate(name, af, pth, true)
 		}
 	}
-
-	return
 }
 
 // LoadCustomTemplates finds all templates under the given path named
@@ -501,15 +529,7 @@ func (s *Server) LoadCustomTemplates(templatePath string) {
 				return nil
 			}
 			name = strings.TrimSuffix(name, ".go.html")
-			s.logger.Debug("Adding custom template", "name", name, "path", pth)
-			var addErr = s.render.addFile(name, afero.NewOsFs(), pth)
-			if addErr != nil {
-				// One bad custom template shouldn't cost us the rest of them;
-				// the core templates can cover the paths it would have
-				s.logger.Error("Cannot load custom template, skipping it", "path", pth, "error", addErr)
-				return nil
-			}
-			s.templates[name] = pth
+			s.addTemplate(name, afero.NewOsFs(), pth, false)
 		}
 		return err
 	})
@@ -526,7 +546,6 @@ func (s *Server) Run(addr string) error {
 	if s.proxyTarget == nil {
 		return errors.New("no proxy target configured")
 	}
-	s.r.HTMLRender = s.render
 
 	logger.Debug(
 		fmt.Sprintf("s.r.Run(%q)", bindAddr),
@@ -536,7 +555,7 @@ func (s *Server) Run(addr string) error {
 		"s.secretKey", redactSecret(s.secretKey),
 		"s.jwtSigningKey", redactSecret(string(s.jwtSigningKey)),
 		"s.proxyTarget", s.proxyTarget,
-		"s.templates", s.templates,
+		"s.templates", s.render.names(),
 	)
 
 	// Run the HTTP server until a fatal error or a termination signal. On
@@ -594,14 +613,13 @@ func (s *Server) getTemplate(r *http.Request, shortname string) string {
 		var source = host + "/" + strings.Join(parts[:i], "/")
 		s.logger.Debug("Looking for template", "source", source, "shortname", shortname)
 		var name = filepath.Join(source, shortname)
-		var template = s.templates[name]
-		if template != "" {
+		if s.render.has(name) {
 			s.logger.Debug("Found custom template", "name", name)
 			return name
 		}
 	}
 
-	if s.templates[shortname] != "" {
+	if s.render.has(shortname) {
 		s.logger.Debug("Found site-wide custom template", "name", shortname)
 		return shortname
 	}
@@ -670,36 +688,42 @@ func (s *Server) handleProxy(c *gin.Context) {
 			return s.jwtSigningKey, nil
 		})
 
+		var claims = claimsOf(token)
 		switch {
 		case parseErr != nil:
 			s.logger.Warn("JWT was present but invalid, presenting challenge", "error", parseErr)
 			challengeReason = db.ReasonInvalidJWT
-		case !s.tokenMatchesClient(token, c):
+		case !s.tokenMatchesClient(claims, c):
 			s.logger.Warn("JWT is valid but bound to a different client, presenting challenge",
 				"clientIP", c.ClientIP())
 			challengeReason = db.ReasonClientMismatch
-			challengeJTI = jtiOf(token)
+			challengeJTI = claims.jti
 		default:
-			var allowed, surcharged = s.chargeToken(token, c)
+			var allowed, surcharged = s.chargeToken(claims, c)
 			if !allowed {
 				s.logger.Warn("JWT is valid but its request budget is exhausted, presenting challenge",
 					"clientIP", c.ClientIP())
 				challengeReason = db.ReasonBudgetExhausted
-				challengeJTI = jtiOf(token)
+				challengeJTI = claims.jti
 				break
 			}
 			s.logger.Debug("JWT is valid, proxying request", "URL", c.Request.URL.String())
-			var e = s.baseEvent(c)
-			e.Outcome = db.OutcomeProxied
-			e.Reason = db.ReasonValidToken
-			e.JTI = jtiOf(token)
-			e.IPSwitch = surcharged
-			s.db.LogEvent(e)
+			s.logDecision(c, db.Event{
+				Outcome:  db.OutcomeProxied,
+				Reason:   db.ReasonValidToken,
+				JTI:      claims.jti,
+				IPSwitch: surcharged,
+			})
 			s.replayRequest(c, c.Request)
 			return
 		}
-	} else if err == http.ErrNoCookie {
+	} else if errors.Is(err, http.ErrNoCookie) {
 		s.logger.Debug("No JWT, presenting challenge")
+	} else {
+		// A cookie that's present but unreadable (a malformed percent-escape,
+		// say). There's nothing to verify, so it takes the same path as no
+		// cookie at all, but silently is the wrong way to do it.
+		s.logger.Warn("Could not read the session cookie, presenting challenge", "error", err)
 	}
 
 	// Everything from here on either verifies a challenge or caches the
@@ -761,9 +785,10 @@ func (s *Server) handleProxy(c *gin.Context) {
 			// and a replay that dies on our side is not the client succeeding.
 			// It isn't the client failing either, so it gets its own outcome
 			// rather than polluting the verify_fail count with our bugs.
-			var e = s.baseEvent(c)
-			e.Outcome = db.OutcomeVerifyOK
-			e.Reason = db.ReasonVerifiedReplay
+			var e = s.fillEvent(c, db.Event{
+				Outcome: db.OutcomeVerifyOK,
+				Reason:  db.ReasonVerifiedReplay,
+			})
 			if served, why := s.issueTokenAndReplay(c, requestID); !served {
 				e.Outcome = db.OutcomeVerifyError
 				e.Reason = why
@@ -771,9 +796,7 @@ func (s *Server) handleProxy(c *gin.Context) {
 			s.db.LogEvent(e)
 		} else {
 			s.logger.Warn("Turnstile verification failed", "error-codes", verifyResp.ErrorCodes)
-			var e = s.baseEvent(c)
-			e.Outcome = db.OutcomeVerifyFail
-			s.db.LogEvent(e)
+			s.logDecision(c, db.Event{Outcome: db.OutcomeVerifyFail})
 			c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "failed"), nil)
 		}
 		return
@@ -806,11 +829,11 @@ func (s *Server) handleProxy(c *gin.Context) {
 	}
 	s.requestCache.Set(newRequestID, cachedReq, cache.DefaultExpiration)
 	s.logger.Info("No/invalid JWT, serving challenge", "requestID", newRequestID)
-	var e = s.baseEvent(c)
-	e.Outcome = db.OutcomeChallenged
-	e.Reason = challengeReason
-	e.JTI = challengeJTI
-	s.db.LogEvent(e)
+	s.logDecision(c, db.Event{
+		Outcome: db.OutcomeChallenged,
+		Reason:  challengeReason,
+		JTI:     challengeJTI,
+	})
 	c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "challenge"), gin.H{
 		"SiteKey":    s.siteKey,
 		"RequestID":  newRequestID,

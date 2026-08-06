@@ -62,9 +62,7 @@ func (s *Server) requireAdmin(c *gin.Context) bool {
 // separates clients that execute JS ("smart") from those that never do
 // ("dumb"). It responds 204 with no body.
 func (s *Server) handleBeacon(c *gin.Context) {
-	var e = s.baseEvent(c)
-	e.Outcome = db.OutcomeChallengeRendered
-	s.db.LogEvent(e)
+	s.logDecision(c, db.Event{Outcome: db.OutcomeChallengeRendered})
 	c.Status(http.StatusNoContent)
 }
 
