@@ -265,6 +265,9 @@ func (s *sqliteStore) writeLoop() {
 	}
 }
 
+// flush writes one batch, logging whatever went wrong. A batch that fails is
+// dropped: these are analytics events, and the request that produced them was
+// served long ago, so there is nothing to retry into and no one to tell.
 func (s *sqliteStore) flush(batch []Event) {
 	var tx, err = s.db.Begin()
 	if err != nil {
@@ -272,16 +275,30 @@ func (s *sqliteStore) flush(batch []Event) {
 		return
 	}
 
-	var stmt *sql.Stmt
-	stmt, err = tx.Prepare(`
+	// Rollback after a successful commit is a no-op, so one deferred call
+	// covers every way out of writeBatch below.
+	defer tx.Rollback()
+
+	if err = s.writeBatch(tx, batch); err != nil {
+		s.logger.Error("Could not write event log batch", "error", err)
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		s.logger.Error("Could not commit event log batch", "error", err)
+	}
+}
+
+// writeBatch inserts the batch's events and folds their counts into the hourly
+// rollups, both inside tx so the raw log and its aggregates can never disagree.
+func (s *sqliteStore) writeBatch(tx *sql.Tx, batch []Event) error {
+	var stmt, err = tx.Prepare(`
 	INSERT INTO events
 		(ts, outcome, reason, client_ip, masked_ip, host, path, method, user_agent, jti, ip_switch)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 	`)
 	if err != nil {
-		s.logger.Error("Could not prepare event log insert", "error", err)
-		tx.Rollback()
-		return
+		return fmt.Errorf("preparing event insert: %w", err)
 	}
 	defer stmt.Close()
 
@@ -292,14 +309,10 @@ func (s *sqliteStore) flush(batch []Event) {
 		}
 		if _, err = stmt.Exec(e.Timestamp.UnixMicro(), e.Outcome, e.Reason, e.ClientIP,
 			e.MaskedIP, e.Host, e.Path, e.Method, e.UserAgent, e.JTI, ipSwitch); err != nil {
-			s.logger.Error("Could not write event to log", "error", err)
-			tx.Rollback()
-			return
+			return fmt.Errorf("writing event: %w", err)
 		}
 	}
 
-	// Fold the batch's counts into the hourly rollups in the same transaction,
-	// so the raw log and its aggregates can never disagree.
 	type bucketOutcome struct {
 		ts      int64
 		outcome string
@@ -316,23 +329,16 @@ func (s *sqliteStore) flush(batch []Event) {
 	ON CONFLICT (bucket_ts, outcome) DO UPDATE SET n = n + excluded.n;
 	`)
 	if err != nil {
-		s.logger.Error("Could not prepare rollup upsert", "error", err)
-		tx.Rollback()
-		return
+		return fmt.Errorf("preparing rollup upsert: %w", err)
 	}
 	defer rstmt.Close()
 
 	for key, n := range counts {
 		if _, err = rstmt.Exec(key.ts, key.outcome, n); err != nil {
-			s.logger.Error("Could not update rollup", "error", err)
-			tx.Rollback()
-			return
+			return fmt.Errorf("updating rollup: %w", err)
 		}
 	}
-
-	if err = tx.Commit(); err != nil {
-		s.logger.Error("Could not commit event log batch", "error", err)
-	}
+	return nil
 }
 
 func (s *sqliteStore) pruneLoop(retention time.Duration) {

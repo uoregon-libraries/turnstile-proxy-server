@@ -67,6 +67,28 @@ func TestLogEventAsync(t *testing.T) {
 	}
 }
 
+// TestFlushRollsBackPartialBatch covers the failure half of a write: the
+// events and the rollups they feed go in one transaction precisely so the two
+// can't disagree, which is only true if a failure part-way through takes the
+// whole batch with it. Dropping the rollups table makes the second half of the
+// write fail after the first half has already inserted rows.
+func TestFlushRollsBackPartialBatch(t *testing.T) {
+	var s = newTestStore(t, 0)
+	if _, err := s.db.Exec("DROP TABLE rollups;"); err != nil {
+		t.Fatalf("dropping rollups: %v", err)
+	}
+
+	s.flush([]Event{
+		{Timestamp: time.Now(), Outcome: OutcomeChallenged},
+		{Timestamp: time.Now(), Outcome: OutcomeProxied},
+	})
+
+	if n := countEvents(t, s); n != 0 {
+		t.Errorf("%d events survived a batch that couldn't finish; the rollups they "+
+			"belong to were never written", n)
+	}
+}
+
 // TestFlushIPSwitch confirms the boolean column persists as 1.
 func TestFlushIPSwitch(t *testing.T) {
 	var s = newTestStore(t, 0)
