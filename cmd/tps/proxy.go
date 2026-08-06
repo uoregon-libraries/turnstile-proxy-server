@@ -78,72 +78,108 @@ func (s *Server) handleProxy(c *gin.Context) {
 		return
 	}
 
-	// challengeReason records why a challenge is being served, for the event
-	// logged at the challenge-serving point below. It defaults to "no cookie"
-	// and is overridden when a cookie is present but unusable.
-	var challengeReason = db.ReasonNoCookie
-	var challengeJTI string
-
-	s.logger.Debug("handleProxy: checking for JWT")
-	var cookie, err = c.Cookie(cookieName)
-	if err == nil {
-		var token, parseErr = jwt.Parse(cookie, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return s.jwtSigningKey, nil
-		})
-
-		var claims = claimsOf(token)
-		switch {
-		case parseErr != nil:
-			s.logger.Warn("JWT was present but invalid, presenting challenge", "error", parseErr)
-			challengeReason = db.ReasonInvalidJWT
-		case !s.tokenMatchesClient(claims, c):
-			s.logger.Warn("JWT is valid but bound to a different client, presenting challenge",
-				"clientIP", c.ClientIP())
-			challengeReason = db.ReasonClientMismatch
-			challengeJTI = claims.jti
-		default:
-			var allowed, surcharged = s.chargeToken(claims, c)
-			if !allowed {
-				s.logger.Warn("JWT is valid but its request budget is exhausted, presenting challenge",
-					"clientIP", c.ClientIP())
-				challengeReason = db.ReasonBudgetExhausted
-				challengeJTI = claims.jti
-				break
-			}
-			s.logger.Debug("JWT is valid, proxying request", "URL", c.Request.URL.String())
-			s.logDecision(c, db.Event{
-				Outcome:  db.OutcomeProxied,
-				Reason:   db.ReasonValidToken,
-				JTI:      claims.jti,
-				IPSwitch: surcharged,
-			})
-			s.replayRequest(c, c.Request)
-			return
-		}
-	} else if errors.Is(err, http.ErrNoCookie) {
-		s.logger.Debug("No JWT, presenting challenge")
-	} else {
-		// A cookie that's present but unreadable (a malformed percent-escape,
-		// say). There's nothing to verify, so it takes the same path as no
-		// cookie at all, but silently is the wrong way to do it.
-		s.logger.Warn("Could not read the session cookie, presenting challenge", "error", err)
+	// A live token is the whole fast path: served straight from the cookie and
+	// never buffered. Everything past this point is challenge machinery, and
+	// pays the costs an unverified client is allowed to impose.
+	var served, challengeReason, challengeJTI = s.authorizeToken(c)
+	if served {
+		return
 	}
 
-	// Everything from here on either verifies a challenge or caches the
-	// request so it can be replayed after one, and both need the body in
-	// memory. Read it once now and hand the rest of the handler a fresh reader
-	// over the same bytes: the form lookups below drain c.Request.Body, so
-	// without this a challenged form POST (urlencoded or multipart) is cached
-	// with an empty body and replayed to the backend with the user's data
-	// gone. The valid-token path above returns before we get here, so ordinary
-	// proxied traffic still streams rather than being buffered.
-	// Cap what an unverified client can make TPS hold. Without this, any bot
-	// can post a body of arbitrary size and TPS buffers all of it — and then
-	// keeps it for the five-minute life of the request cache. A verified
-	// request never reaches here, so this doesn't limit real uploads.
+	var body, ok = s.bufferChallengeBody(c)
+	if !ok {
+		return
+	}
+
+	// Not a valid session, check if this is a verification attempt
+	s.logger.Debug("handleProxy: checking request for turnstile POST")
+	var turnstileResponse = c.PostForm("cf-turnstile-response")
+	var requestID = c.PostForm("request_id")
+	if c.Request.Method == http.MethodPost && turnstileResponse != "" && requestID != "" {
+		s.handleVerification(c, turnstileResponse, requestID)
+		return
+	}
+
+	s.serveChallenge(c, body, challengeReason, challengeJTI)
+}
+
+// authorizeToken looks for a live session cookie and, when it finds one,
+// serves the request from it. It reports whether the request was served; when
+// it wasn't, it reports why the client is about to be challenged and the jti
+// of the token that failed, where there was a token to name.
+//
+// A request authorized here streams to the backend like any ordinary proxied
+// request. That is the point of doing this first: the buffering, the size
+// caps, and the request cache all exist for clients that haven't proved
+// anything, and a client that has proved something shouldn't pay for them.
+func (s *Server) authorizeToken(c *gin.Context) (served bool, reason, jti string) {
+	s.logger.Debug("handleProxy: checking for JWT")
+
+	var cookie, err = c.Cookie(cookieName)
+	if err != nil {
+		if errors.Is(err, http.ErrNoCookie) {
+			s.logger.Debug("No JWT, presenting challenge")
+		} else {
+			// A cookie that's present but unreadable (a malformed
+			// percent-escape, say). There's nothing to verify, so it takes the
+			// same path as no cookie at all, but silently is the wrong way to
+			// do it.
+			s.logger.Warn("Could not read the session cookie, presenting challenge", "error", err)
+		}
+		return false, db.ReasonNoCookie, ""
+	}
+
+	var token, parseErr = jwt.Parse(cookie, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return s.jwtSigningKey, nil
+	})
+	if parseErr != nil {
+		s.logger.Warn("JWT was present but invalid, presenting challenge", "error", parseErr)
+		return false, db.ReasonInvalidJWT, ""
+	}
+
+	var claims = claimsOf(token)
+	if !s.tokenMatchesClient(claims, c) {
+		s.logger.Warn("JWT is valid but bound to a different client, presenting challenge",
+			"clientIP", c.ClientIP())
+		return false, db.ReasonClientMismatch, claims.jti
+	}
+
+	var allowed, surcharged = s.chargeToken(claims, c)
+	if !allowed {
+		s.logger.Warn("JWT is valid but its request budget is exhausted, presenting challenge",
+			"clientIP", c.ClientIP())
+		return false, db.ReasonBudgetExhausted, claims.jti
+	}
+
+	s.logger.Debug("JWT is valid, proxying request", "URL", c.Request.URL.String())
+	s.logDecision(c, db.Event{
+		Outcome:  db.OutcomeProxied,
+		Reason:   db.ReasonValidToken,
+		JTI:      claims.jti,
+		IPSwitch: surcharged,
+	})
+	s.replayRequest(c, c.Request)
+	return true, "", ""
+}
+
+// bufferChallengeBody reads the request body into memory and hands the caller
+// both the bytes and a fresh reader over them. It reports whether the caller
+// should carry on; when it returns false it has already answered the client.
+//
+// Verifying a challenge and caching a request for replay both need the body in
+// memory, and gin's form lookups drain c.Request.Body to answer. Without
+// reading it once here, a challenged form POST (urlencoded or multipart) is
+// cached with an empty body and replayed to the backend with the user's data
+// gone.
+//
+// The read is capped at maxChallengeBody, because this is memory an unverified
+// client gets to allocate: any bot can post a body of whatever size it likes
+// and have TPS keep it for the five-minute life of the request cache. A
+// request with a live token never reaches here, so real uploads aren't capped.
+func (s *Server) bufferChallengeBody(c *gin.Context) ([]byte, bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, s.maxChallengeBody)
 	var body, readErr = io.ReadAll(c.Request.Body)
 	if readErr != nil {
@@ -152,63 +188,68 @@ func (s *Server) handleProxy(c *gin.Context) {
 			s.logger.Warn("Request body too large to challenge",
 				"limit", s.maxChallengeBody, "clientIP", c.ClientIP(), "path", c.Request.URL.Path)
 			c.String(http.StatusRequestEntityTooLarge, "Request body too large")
-			return
+			return nil, false
 		}
 		s.logger.Error("Could not read original request body", "error", readErr)
 		c.String(http.StatusInternalServerError, "Could not buffer request")
-		return
+		return nil, false
 	}
+
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	return body, true
+}
 
-	// Not a valid session, check if this is a verification attempt
-	s.logger.Debug("handleProxy: checking request for turnstile POST")
-	var turnstileResponse = c.PostForm("cf-turnstile-response")
-	var requestID = c.PostForm("request_id")
-	if c.Request.Method == "POST" && turnstileResponse != "" && requestID != "" {
-		s.logger.Debug("Received turnstile response, attempting verification", "requestID", requestID)
+// handleVerification checks a solved challenge with Cloudflare and, if it's
+// genuine, issues the session cookie and delivers the request the challenge
+// interrupted.
+func (s *Server) handleVerification(c *gin.Context, turnstileResponse, requestID string) {
+	s.logger.Debug("Received turnstile response, attempting verification", "requestID", requestID)
 
-		var client = &http.Client{Timeout: 10 * time.Second}
-		var resp, err = client.PostForm(s.verifyURL, url.Values{"secret": {s.secretKey}, "response": {turnstileResponse}})
-		if err != nil {
-			s.logger.Error("Failed to POST to Cloudflare", "error", err)
-			c.String(http.StatusInternalServerError, "Failed to verify token")
-			return
-		}
-		defer resp.Body.Close()
+	var client = &http.Client{Timeout: 10 * time.Second}
+	var resp, err = client.PostForm(s.verifyURL, url.Values{"secret": {s.secretKey}, "response": {turnstileResponse}})
+	if err != nil {
+		s.logger.Error("Failed to POST to Cloudflare", "error", err)
+		c.String(http.StatusInternalServerError, "Failed to verify token")
+		return
+	}
+	defer resp.Body.Close()
 
-		var verifyResp cloudflareVerifyResponse
-		err = json.NewDecoder(resp.Body).Decode(&verifyResp)
-		if err != nil {
-			s.logger.Error("Failed to decode Cloudflare response", "error", err)
-			c.String(http.StatusInternalServerError, "Failed to decode Cloudflare response")
-			return
-		}
-
-		if verifyResp.Success {
-			s.logger.Debug("Turnstile verification successful")
-			// Build the event before the replay (which consumes the request) but
-			// log it after: "solved" should mean the client actually got through,
-			// and a replay that dies on our side is not the client succeeding.
-			// It isn't the client failing either, so it gets its own outcome
-			// rather than polluting the verify_fail count with our bugs.
-			var e = s.fillEvent(c, db.Event{
-				Outcome: db.OutcomeVerifyOK,
-				Reason:  db.ReasonVerifiedReplay,
-			})
-			if served, why := s.issueTokenAndReplay(c, requestID); !served {
-				e.Outcome = db.OutcomeVerifyError
-				e.Reason = why
-			}
-			s.db.LogEvent(e)
-		} else {
-			s.logger.Warn("Turnstile verification failed", "error-codes", verifyResp.ErrorCodes)
-			s.logDecision(c, db.Event{Outcome: db.OutcomeVerifyFail})
-			c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "failed"), nil)
-		}
+	var verifyResp cloudflareVerifyResponse
+	err = json.NewDecoder(resp.Body).Decode(&verifyResp)
+	if err != nil {
+		s.logger.Error("Failed to decode Cloudflare response", "error", err)
+		c.String(http.StatusInternalServerError, "Failed to decode Cloudflare response")
 		return
 	}
 
-	// This is a new request, cache it and serve the challenge
+	if !verifyResp.Success {
+		s.logger.Warn("Turnstile verification failed", "error-codes", verifyResp.ErrorCodes)
+		s.logDecision(c, db.Event{Outcome: db.OutcomeVerifyFail})
+		c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "failed"), nil)
+		return
+	}
+
+	s.logger.Debug("Turnstile verification successful")
+	// Build the event before the replay (which consumes the request) but log it
+	// after: "solved" should mean the client actually got through, and a replay
+	// that dies on our side is not the client succeeding. It isn't the client
+	// failing either, so it gets its own outcome rather than polluting the
+	// verify_fail count with our bugs.
+	var e = s.fillEvent(c, db.Event{
+		Outcome: db.OutcomeVerifyOK,
+		Reason:  db.ReasonVerifiedReplay,
+	})
+	if served, why := s.issueTokenAndReplay(c, requestID); !served {
+		e.Outcome = db.OutcomeVerifyError
+		e.Reason = why
+	}
+	s.db.LogEvent(e)
+}
+
+// serveChallenge caches the request the challenge is about to interrupt, so it
+// can be replayed once the client solves it, and renders the challenge page.
+// reason and jti are what authorizeToken concluded, for the logged event.
+func (s *Server) serveChallenge(c *gin.Context, body []byte, reason, jti string) {
 	s.logger.Debug("handleProxy: new request, presenting challenge")
 
 	// Reserve the cache budget before taking the memory. Challenges pending at
@@ -237,8 +278,8 @@ func (s *Server) handleProxy(c *gin.Context) {
 	s.logger.Info("No/invalid JWT, serving challenge", "requestID", newRequestID)
 	s.logDecision(c, db.Event{
 		Outcome: db.OutcomeChallenged,
-		Reason:  challengeReason,
-		JTI:     challengeJTI,
+		Reason:  reason,
+		JTI:     jti,
 	})
 	c.HTML(http.StatusForbidden, s.getTemplate(c.Request, "challenge"), gin.H{
 		"SiteKey":    s.siteKey,
