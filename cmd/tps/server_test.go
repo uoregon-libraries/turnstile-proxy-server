@@ -88,8 +88,7 @@ func TestMaskClientIP(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &Server{}
-			if got := s.maskClientIP(tc.ip); got != tc.want {
+			if got := maskClientIP(tc.ip); got != tc.want {
 				t.Errorf("maskClientIP(%q) = %q, want %q", tc.ip, got, tc.want)
 			}
 		})
@@ -276,7 +275,7 @@ func TestChargeToken(t *testing.T) {
 		s := newBudgetServer(5, 10)
 		token := signAndParse(t, s, claims("token-e"))
 		solver := newTestContext(t, "Mozilla/5.0", "192.0.2.55")
-		s.budgetCache.Set("token-e", &budgetState{lastIP: s.maskClientIP(solver.ClientIP())}, time.Minute)
+		s.budgetCache.Set("token-e", &budgetState{lastIP: maskClientIP(solver.ClientIP())}, time.Minute)
 
 		if charged(s, token, newTestContext(t, "Mozilla/5.0", "203.0.113.7")) {
 			t.Error("surcharge larger than the budget accepted on the first request after a switch")
@@ -425,7 +424,7 @@ func TestHandleProxyLogsDecisionEvents(t *testing.T) {
 			// budget was spent faster than one-per-request.
 			name: "a token whose client moved is surcharged, not refused",
 			prepare: func(t *testing.T, s *Server) string {
-				s.budgetCache.Set("tok-moved", &budgetState{lastIP: s.maskClientIP(firstIP)}, time.Hour)
+				s.budgetCache.Set("tok-moved", &budgetState{lastIP: maskClientIP(firstIP)}, time.Hour)
 				return signCookie(t, s, jwt.MapClaims{
 					"jti": "tok-moved",
 					"exp": time.Now().Add(time.Hour).Unix(),
@@ -468,7 +467,7 @@ func TestHandleProxyLogsDecisionEvents(t *testing.T) {
 			name: "a spent budget is challenged",
 			prepare: func(t *testing.T, s *Server) string {
 				s.budgetCache.Set("tok-spent",
-					&budgetState{spent: s.requestBudget, lastIP: s.maskClientIP(firstIP)}, time.Hour)
+					&budgetState{spent: s.requestBudget, lastIP: maskClientIP(firstIP)}, time.Hour)
 				return signCookie(t, s, jwt.MapClaims{
 					"jti": "tok-spent",
 					"exp": time.Now().Add(time.Hour).Unix(),
@@ -527,8 +526,8 @@ func TestHandleProxyLogsDecisionEvents(t *testing.T) {
 			if e.IPSwitch != tc.wantIPSwitch {
 				t.Errorf("event ipSwitch = %v, want %v", e.IPSwitch, tc.wantIPSwitch)
 			}
-			if e.MaskedIP != s.maskClientIP(tc.clientIP) {
-				t.Errorf("event maskedIP = %q, want %q", e.MaskedIP, s.maskClientIP(tc.clientIP))
+			if e.MaskedIP != maskClientIP(tc.clientIP) {
+				t.Errorf("event maskedIP = %q, want %q", e.MaskedIP, maskClientIP(tc.clientIP))
 			}
 		})
 	}
