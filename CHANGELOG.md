@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.1.0
+## Unreleased
 
 Various bug-fixes and improvements, nothing amazing, nothing breaking.
 
