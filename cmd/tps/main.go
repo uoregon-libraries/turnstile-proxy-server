@@ -41,6 +41,8 @@ func main() {
 		serve()
 	case "vacuum":
 		vacuum()
+	case "key":
+		keyCommand(flag.Args()[1:])
 	case "help":
 		help()
 	default:
@@ -66,7 +68,7 @@ func parseLogLevel(name string) (slog.Level, bool) {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [-env-file=path] [serve|vacuum|help]")
+	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [-env-file=path] [serve|vacuum|key|help]")
 }
 
 func help() {
@@ -77,6 +79,10 @@ func help() {
 	fmt.Println("                 shrink the file on their own. Safe while a TPS instance is running (requests")
 	fmt.Println("                 are never delayed), though some analytics events may be dropped during the")
 	fmt.Println("                 rebuild. Needs temporary disk space up to the size of the database.")
+	fmt.Println("- key: manage bypass keys — provisioned, rate-limited credentials that skip the")
+	fmt.Println("                 challenge (for vetted scrapers). 'tps key' alone shows its own usage;")
+	fmt.Println("                 subcommands are add, list, and revoke. Keys live in the event log")
+	fmt.Println("                 database, so this needs LOG_DB_PATH.")
 	fmt.Println("")
 	fmt.Println("Flags:")
 	fmt.Println(`- -log-level (optional): log verbosity, one of "debug", "info", "warn", or "error".`)

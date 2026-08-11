@@ -78,6 +78,13 @@ func (s *Server) handleProxy(c *gin.Context) {
 		return
 	}
 
+	// A bypass key is provisioned authorization: no cookie, no challenge,
+	// its own rate limit. Checked before the token so a key holder never
+	// needs a browser session, and served from the same streaming fast path.
+	if s.authorizeBypass(c) {
+		return
+	}
+
 	// A live token is the whole fast path: served straight from the cookie and
 	// never buffered. Everything past this point is challenge machinery, and
 	// pays the costs an unverified client is allowed to impose.

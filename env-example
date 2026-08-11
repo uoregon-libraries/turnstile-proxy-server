@@ -25,6 +25,8 @@ PROXY_TARGET="http://localhost"
 # this path; the file is created if it doesn't exist. If unset, event logging
 # is disabled and TPS runs without a database. Query it with the sqlite3 CLI,
 # e.g. `SELECT outcome, reason, COUNT(*) FROM events GROUP BY 1, 2;`.
+# Bypass keys (`tps key`, see the README) also live here, so they require
+# this to be set.
 LOG_DB_PATH="/var/local/tps/data/tps.db"
 
 # How long to keep logged events, as a Go duration string. Older events are

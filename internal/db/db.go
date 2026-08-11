@@ -24,6 +24,7 @@ const (
 	OutcomeVerifyOK          = "verify_ok"          // a challenge solution verified successfully
 	OutcomeVerifyFail        = "verify_fail"        // a challenge solution failed verification
 	OutcomeVerifyError       = "verify_error"       // Cloudflare accepted the solution but TPS couldn't finish
+	OutcomeRateLimited       = "rate_limited"       // a bypass-key request was refused with a 429
 )
 
 // Reason gives more detail about an outcome (why a challenge was served, or how
@@ -38,6 +39,9 @@ const (
 	ReasonVerifiedReplay   = "verified_replay"   // proxied/verify_ok: replay after solving a challenge
 	ReasonReplayFailed     = "replay_failed"     // verify_error: the solution was good, the replay wasn't
 	ReasonChallengeExpired = "challenge_expired" // verify_error: solved after the cached request timed out
+	ReasonBypassKey        = "bypass_key"        // proxied: a bypass key authorized the request
+	ReasonBypassRate       = "bypass_rate"       // rate_limited: the key's request rate is exceeded
+	ReasonBypassDailyCap   = "bypass_daily_cap"  // rate_limited: the key's daily cap is spent
 )
 
 // Event is a single proxy decision to be recorded.
@@ -53,6 +57,7 @@ type Event struct {
 	UserAgent string
 	JTI       string
 	IPSwitch  bool
+	KeyID     int64 // bypass key that authorized (or refused) the request; 0 = none
 }
 
 // Store records decision events. Implementations may persist to SQLite or
@@ -64,6 +69,12 @@ type Store interface {
 	// log. See [sqliteStore.Report]. Implementations without a backing table
 	// return [ErrReportingUnavailable].
 	Report(start, end time.Time, bucket time.Duration) ([]CountBucket, error)
+	// The key methods manage bypass keys, which live alongside the event log.
+	// Implementations without a backing database return [ErrKeysUnavailable].
+	CreateKey(k Key) (int64, error)
+	ListKeys() ([]Key, error)
+	RevokeKey(id int64) error
+	KeyUsage() (map[int64]KeyUsage, error)
 	Close() error
 }
 
@@ -176,11 +187,48 @@ func (s *sqliteStore) migrate() error {
 		n         INTEGER NOT NULL,
 		PRIMARY KEY (bucket_ts, outcome)
 	) WITHOUT ROWID;
+
+	CREATE TABLE IF NOT EXISTS bypass_keys(
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		key_hash     TEXT NOT NULL UNIQUE,
+		label        TEXT NOT NULL,
+		cidrs        TEXT NOT NULL DEFAULT '',
+		rate_per_sec REAL NOT NULL,
+		burst        INTEGER NOT NULL,
+		daily_cap    INTEGER NOT NULL DEFAULT 0,
+		notes        TEXT NOT NULL DEFAULT '',
+		created_at   INTEGER NOT NULL,
+		expires_at   INTEGER NOT NULL,
+		revoked_at   INTEGER
+	);
 	`
 	if _, err := s.db.Exec(query); err != nil {
 		return err
 	}
+	if err := s.addKeyIDColumn(); err != nil {
+		return err
+	}
 	return s.backfillRollups()
+}
+
+// addKeyIDColumn adds events.key_id to a database from before bypass keys.
+// SQLite has no ADD COLUMN IF NOT EXISTS, so presence is checked first. The
+// index is partial: almost every event has no key, and the per-key usage
+// queries only ever want the ones that do.
+func (s *sqliteStore) addKeyIDColumn() error {
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'key_id'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE events ADD COLUMN key_id INTEGER;`); err != nil {
+			return err
+		}
+	}
+	var _, err = s.db.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_events_key ON events(key_id) WHERE key_id IS NOT NULL;`)
+	return err
 }
 
 // backfillRollups populates the rollups table from raw events the first time a
@@ -294,8 +342,8 @@ func (s *sqliteStore) flush(batch []Event) {
 func (s *sqliteStore) writeBatch(tx *sql.Tx, batch []Event) error {
 	var stmt, err = tx.Prepare(`
 	INSERT INTO events
-		(ts, outcome, reason, client_ip, masked_ip, host, path, method, user_agent, jti, ip_switch)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+		(ts, outcome, reason, client_ip, masked_ip, host, path, method, user_agent, jti, ip_switch, key_id)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 	`)
 	if err != nil {
 		return fmt.Errorf("preparing event insert: %w", err)
@@ -307,8 +355,14 @@ func (s *sqliteStore) writeBatch(tx *sql.Tx, batch []Event) error {
 		if e.IPSwitch {
 			ipSwitch = 1
 		}
+		// NULL rather than 0 for keyless events, so the partial index and the
+		// per-key aggregates only ever touch rows that name a key
+		var keyID any
+		if e.KeyID != 0 {
+			keyID = e.KeyID
+		}
 		if _, err = stmt.Exec(e.Timestamp.UnixMicro(), e.Outcome, e.Reason, e.ClientIP,
-			e.MaskedIP, e.Host, e.Path, e.Method, e.UserAgent, e.JTI, ipSwitch); err != nil {
+			e.MaskedIP, e.Host, e.Path, e.Method, e.UserAgent, e.JTI, ipSwitch, keyID); err != nil {
 			return fmt.Errorf("writing event: %w", err)
 		}
 	}

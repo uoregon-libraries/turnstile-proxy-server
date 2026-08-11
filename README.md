@@ -95,6 +95,58 @@ Make sure you use custom challenge / failure templates with a link to contact
 you. If you know enough about the various failure modes, put workarounds in
 your challenge / failure pages!
 
+## Bypass Keys
+
+Sometimes you *want* to let a bot through: a vetted researcher scraping your
+site for a real project, say. Bypass keys are provisioned credentials that skip
+the challenge without removing the limits — every key carries its own rate
+limit, so "trusted" never means "unlimited", and misuse gets a `429` instead of
+an awkward conversation.
+
+Keys live in the event log database, so `LOG_DB_PATH` must be set. Manage them
+with the `tps key` subcommands:
+
+```bash
+# Mint a key: one request per two seconds sustained, bursts of ten,
+# only from the lab's network, dead at the end of winter term
+tps key add -label "wilson-lab" -rate 1/2s -burst 10 \
+    -cidr 203.0.113.0/24 -expires 2027-03-31 -daily-cap 20000 \
+    -notes "corpus crawl, contact wilson@example.edu"
+
+tps key list      # every key, its limits, and its recent traffic
+tps key revoke 3  # permanent; honored by a running server within 30s
+```
+
+The key is printed once at creation and never stored (only its hash is), so
+copy it then. Every setting on `add` except `-daily-cap` and `-notes` is
+required on purpose: handing out a bypass credential should mean deciding how
+much it may do.
+
+Clients send the key on every request, either way works:
+
+```bash
+curl -H "X-TPS-Key: tps_..." https://yoursite.example/search?q=stuff
+curl -H "Authorization: Bearer tps_..." https://yoursite.example/search?q=stuff
+```
+
+A few behaviors worth knowing:
+
+- Requests under the sustained rate are proxied immediately. A short burst
+  beyond it is *held* briefly (up to ~2s) rather than refused, so a simple
+  sequential scraper runs at exactly its permitted pace without ever seeing an
+  error. Pushing harder than that gets `429` responses with a `Retry-After`
+  header saying when to try again — same for a spent daily cap.
+- A bad key (unknown, expired, revoked, or used from outside its networks)
+  falls back to the normal challenge, and the response carries an
+  `X-TPS-Key-Status` header (`unknown` / `expired` / `revoked` / `wrong_ip`)
+  so the client can tell what happened.
+- The key never reaches your backend: TPS strips `X-TPS-Key` (and an
+  `Authorization` header holding a `tps_` token) before proxying. Other
+  `Authorization` values pass through untouched.
+- Every key-authorized request is logged like any other, tagged with the key,
+  so `tps key list` can show per-key traffic and the raw events support
+  questions like "which networks is this key really coming from".
+
 ## Docker Image
 
 The docker image is set up for production use, and won't be suitable for dev

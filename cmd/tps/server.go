@@ -84,6 +84,13 @@ type Server struct {
 	requestCache *cache.Cache
 	proxyTarget  *url.URL
 
+	// bypassKeys is the in-memory snapshot of the bypass-key table, keyed by
+	// key hash and refreshed on a timer (see startBypassRefresh) so the
+	// request path never waits on the database. Nil until the first load,
+	// which reads as "no keys".
+	bypassMu   sync.Mutex
+	bypassKeys map[string]*bypassKey
+
 	maxChallengeBody  int64
 	maxChallengeCache int64
 	// cachedBytes is what the pending challenges in requestCache are currently
@@ -306,6 +313,8 @@ func (s *Server) Run(addr string) error {
 
 	var ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	s.startBypassRefresh(ctx)
 
 	var errCh = make(chan error, 1)
 	go func() {
