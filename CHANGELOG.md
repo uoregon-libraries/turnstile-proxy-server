@@ -7,19 +7,11 @@
 - New config: `MAX_CHALLENGE_BODY` and `MAX_CHALLENGE_CACHE`. These prevent TPS
   from letting bots do trivial DoS attacks by sending unlimited POST requests.
 - Bypass keys: provisioned credentials that let vetted clients (careful
-  research scrapers, mostly) through TPS without solving a challenge, while
-  keeping them rate-limited. Managed entirely from the command line with the
-  new `tps key add|list|revoke` subcommands; keys live in the event log
-  database, so `LOG_DB_PATH` is required to use them. Each key carries a
-  required sustained rate + burst (token bucket), required expiration, and
-  required client network restriction (`-cidr`, which may be "any"), plus an
-  optional daily request cap. Clients present the key via `X-TPS-Key` or
-  `Authorization: Bearer`; requests over the rate are briefly paced when
-  possible and refused with `429` + `Retry-After` otherwise, and a dead or
-  misused key falls back to the normal challenge with an `X-TPS-Key-Status`
-  response header saying why. Key-authorized and rate-limited requests are
-  logged to the event database tagged with the key, and `tps key list` shows
-  each key's recent usage. See the README's "Bypass Keys" section.
+  research scrapers, mostly) through TPS without solving a challenge. Requires
+  a manual command to provision keys, and requires specifying rate limits to
+  avoid badly written scrapers from DoSing your site. `LOG_DB_PATH` is required
+  to use them, as they have to be persisted and right now that means the event
+  log.... For details, see the README's "Bypass Keys" section.
 
 
 ### Fixed

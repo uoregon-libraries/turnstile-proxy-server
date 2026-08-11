@@ -97,45 +97,56 @@ your challenge / failure pages!
 
 ## Bypass Keys
 
-Sometimes you *want* to let a bot through: a vetted researcher scraping your
-site for a real project, say. Bypass keys are provisioned credentials that skip
-the challenge without removing the limits — every key carries its own rate
-limit, so "trusted" never means "unlimited", and misuse gets a `429` instead of
-an awkward conversation.
+Sometimes we need to allow bots (e.g., researchers needing to scrape data in
+bulk). Enter bypass keys: manually provisioned credentials that skip the
+challenge without giving completely unrestricted access. Provisioning a key
+requires an expiration, a maximum rate, a "burst" allowance, and a daily
+request cap.
 
-Keys live in the event log database, so `LOG_DB_PATH` must be set. Manage them
-with the `tps key` subcommands:
+*Note*: as with anything protected by TPS, all limits here are strictly for
+assets protected by TPS in the first place.
+
+*Note 2*: keys live in the event log database, so `LOG_DB_PATH` must be set.
+
+Key provisioning looks a bit like this:
 
 ```bash
-# Mint a key: one request per two seconds sustained, bursts of ten,
-# only from the lab's network, dead at the end of winter term
 tps key add -label "wilson-lab" -rate 1/2s -burst 10 \
     -cidr 203.0.113.0/24 -expires 2027-03-31 -daily-cap 20000 \
     -notes "corpus crawl, contact wilson@example.edu"
-
-tps key list      # every key, its limits, and its recent traffic
-tps key revoke 3  # permanent; honored by a running server within 30s
 ```
 
-The key is printed once at creation and never stored (only its hash is), so
-copy it then. Every setting on `add` except `-daily-cap` and `-notes` is
-required on purpose: handing out a bypass credential should mean deciding how
-much it may do.
+This creates a key with a one-request-per-two-seconds limit, allowing up to 10
+requests in a batch without giving any error to the client, and a maximum of
+20,000 requests in any given day.
 
-Clients send the key on every request, either way works:
+The key is printed once at creation and never stored (the db holds a hash).
+**Copy it immediately** or it will be lost.
+
+Listing and revoking keys is easy:
+
+```
+tps key list
+tps key revoke X
+```
+
+A request using a key looks like this:
 
 ```bash
 curl -H "X-TPS-Key: tps_..." https://yoursite.example/search?q=stuff
 curl -H "Authorization: Bearer tps_..." https://yoursite.example/search?q=stuff
 ```
 
-A few behaviors worth knowing:
+Other info:
 
-- Requests under the sustained rate are proxied immediately. A short burst
+- Requests under the rate limit are proxied immediately. A short burst
   beyond it is *held* briefly (up to ~2s) rather than refused, so a simple
   sequential scraper runs at exactly its permitted pace without ever seeing an
   error. Pushing harder than that gets `429` responses with a `Retry-After`
-  header saying when to try again — same for a spent daily cap.
+  header saying when to try again.
+- The daily cap is not required, and there won't be a cap if you don't set one.
+  If your rate limits are sane, the daily cap can usually be omitted. Requests
+  beyond the daily cap get a `429` reponse and `Retry-After` headers.
 - A bad key (unknown, expired, revoked, or used from outside its networks)
   falls back to the normal challenge, and the response carries an
   `X-TPS-Key-Status` header (`unknown` / `expired` / `revoked` / `wrong_ip`)
