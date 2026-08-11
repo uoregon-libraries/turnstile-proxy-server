@@ -157,6 +157,9 @@ func serve() {
 	var err = server.Run(conf.bindAddr)
 	if err != nil {
 		logger.Error("Could not start server", "error", err)
+		// os.Exit skips the deferred Close, which is what drains queued
+		// analytics events; a crashing server shouldn't also lose them
+		store.Close()
 		os.Exit(1)
 	}
 }

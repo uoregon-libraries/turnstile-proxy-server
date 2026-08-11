@@ -25,6 +25,11 @@ Various bug-fixes and improvements, nothing amazing, nothing breaking.
   submission can't be replayed safely, so on expiration users get a message
   saying to resubmit.
 - Minor fix in how `solved` counts worked
+- A client that disconnects while its just-solved request is being replayed now
+  cancels the backend request instead of leaving it running with nobody
+  waiting on the response.
+- A server that dies on a startup/runtime error no longer discards analytics
+  events still queued for the database.
 - Secrets in env vars are no longer written to the log (`JWT_SIGNING_KEY` and
   `TURNSTILE_SECRET_KEY`)
 

@@ -409,7 +409,11 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) (served b
 
 	s.logger.Debug("Replaying request", "Method", cachedReq.Method, "URL", cachedReq.URL)
 
-	var req, reqErr = http.NewRequest(cachedReq.Method, cachedReq.URL.String(), bytes.NewReader(cachedReq.Body))
+	// The replay must live and die with the client connection it answers: with
+	// a fresh context, a client that hung up mid-replay would leave the backend
+	// serving a request nobody is waiting for.
+	var req, reqErr = http.NewRequestWithContext(c.Request.Context(),
+		cachedReq.Method, cachedReq.URL.String(), bytes.NewReader(cachedReq.Body))
 	if reqErr != nil {
 		s.logger.Error("Could not create new request from cached", "requestID", requestID, "error", reqErr)
 		c.String(http.StatusInternalServerError, "Could not replay original request")
