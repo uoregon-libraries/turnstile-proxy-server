@@ -26,6 +26,15 @@ type cachedRequest struct {
 	URL     *url.URL
 }
 
+// uncachedGetIDPrefix marks the request ID of a challenged GET, which caches
+// nothing: everything needed to deliver a solved GET is the URL the challenge
+// form posts back to, so the request cache — and the memory a flood of
+// cookieless GETs would otherwise pin there for five minutes apiece — is
+// reserved for requests with bodies. A client inventing a marked ID gains
+// nothing: solving a genuine challenge under one just redirects the client to
+// the same-origin URL it posted to, exactly as a real marked ID would.
+const uncachedGetIDPrefix = "get-"
+
 // cloudflareVerifyResponse is the structure of the JSON response from Cloudflare
 type cloudflareVerifyResponse struct {
 	Success     bool     `json:"success"`
@@ -93,9 +102,17 @@ func (s *Server) handleProxy(c *gin.Context) {
 		return
 	}
 
-	var body, ok = s.bufferChallengeBody(c)
-	if !ok {
-		return
+	// A GET's challenge buffers and caches nothing (see serveChallenge), so
+	// its body is left unread. GETs are what a bot flood is made of, and
+	// nothing below needs the body: a verification attempt is always a POST,
+	// and PostForm ignores a GET's body anyway.
+	var body []byte
+	if c.Request.Method != http.MethodGet {
+		var ok bool
+		body, ok = s.bufferChallengeBody(c)
+		if !ok {
+			return
+		}
 	}
 
 	// Not a valid session, check if this is a verification attempt
@@ -259,29 +276,39 @@ func (s *Server) handleVerification(c *gin.Context, turnstileResponse, requestID
 func (s *Server) serveChallenge(c *gin.Context, body []byte, reason, jti string) {
 	s.logger.Debug("handleProxy: new request, presenting challenge")
 
-	// Reserve the cache budget before taking the memory. Challenges pending at
-	// once are otherwise unbounded: each one holds its request for five
-	// minutes whether or not the client is still there, so a flood outlives
-	// itself by five minutes and keeps growing. Shedding with a 503 is the
-	// right failure here — it costs one client a challenge, where running out
-	// of memory costs everyone the whole gate.
-	var cost = cachedRequestCost(body)
-	if s.cachedBytes.Add(cost) > s.maxChallengeCache {
-		s.cachedBytes.Add(-cost)
-		s.logger.Warn("Too many challenges pending to cache another request",
-			"limit", s.maxChallengeCache, "clientIP", c.ClientIP(), "path", c.Request.URL.Path)
-		c.String(http.StatusServiceUnavailable, "Too many challenges in flight, try again shortly")
-		return
-	}
+	var newRequestID string
+	if c.Request.Method == http.MethodGet {
+		// A GET is delivered after its challenge by redirecting to the URL the
+		// form posted to, so there is nothing to cache and no budget to spend.
+		// The marked ID tells issueTokenAndReplay not to go looking. This is
+		// what keeps a flood of cookieless GETs from pinning memory for five
+		// minutes apiece and crowding out the humans the cache exists for.
+		newRequestID = uncachedGetIDPrefix + requestid.New()
+	} else {
+		// Reserve the cache budget before taking the memory. Challenges pending
+		// at once are otherwise unbounded: each one holds its request for five
+		// minutes whether or not the client is still there, so a flood outlives
+		// itself by five minutes and keeps growing. Shedding with a 503 is the
+		// right failure here — it costs one client a challenge, where running
+		// out of memory costs everyone the whole gate.
+		var cost = cachedRequestCost(body)
+		if s.cachedBytes.Add(cost) > s.maxChallengeCache {
+			s.cachedBytes.Add(-cost)
+			s.logger.Warn("Too many challenges pending to cache another request",
+				"limit", s.maxChallengeCache, "clientIP", c.ClientIP(), "path", c.Request.URL.Path)
+			c.String(http.StatusServiceUnavailable, "Too many challenges in flight, try again shortly")
+			return
+		}
 
-	var newRequestID = requestid.New()
-	var cachedReq = &cachedRequest{
-		Method:  c.Request.Method,
-		Body:    body,
-		Headers: c.Request.Header,
-		URL:     c.Request.URL,
+		newRequestID = requestid.New()
+		var cachedReq = &cachedRequest{
+			Method:  c.Request.Method,
+			Body:    body,
+			Headers: c.Request.Header,
+			URL:     c.Request.URL,
+		}
+		s.requestCache.Set(newRequestID, cachedReq, cache.DefaultExpiration)
 	}
-	s.requestCache.Set(newRequestID, cachedReq, cache.DefaultExpiration)
 	s.logger.Info("No/invalid JWT, serving challenge", "requestID", newRequestID)
 	s.logDecision(c, db.Event{
 		Outcome: db.OutcomeChallenged,
@@ -387,6 +414,18 @@ func (s *Server) issueTokenAndReplay(c *gin.Context, requestID string) (served b
 		"bound", claimsMap["bnd"] != nil,
 		"requestID", requestID)
 	c.SetCookie(cookieName, tokenString, int(s.tokenLifetime.Seconds()), "/", "", secure, true)
+
+	// A challenged GET cached nothing (see serveChallenge): the redirect that
+	// delivers it is built from the URL the challenge form posted to, which is
+	// the original URL. handleProxy has already refused any target that names
+	// another origin, so the client is only ever sent back to this site. This
+	// can't expire the way a cache entry can, so however long the solve took,
+	// a GET lands the same way.
+	if strings.HasPrefix(requestID, uncachedGetIDPrefix) {
+		s.logger.Debug("Redirecting to original GET after challenge", "URL", c.Request.URL.String())
+		c.Redirect(http.StatusSeeOther, c.Request.URL.String())
+		return true, ""
+	}
 
 	var cachedReqInterface, ok = s.requestCache.Get(requestID)
 	if !ok {
