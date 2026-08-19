@@ -40,14 +40,8 @@
 ### Changed
 
 - Challenged GET requests are no longer buffered or cached while their
-  challenge is pending. A GET needs nothing replayed — a solved challenge
-  already answers it with a redirect to the original URL — so the request
-  cache, and the memory a bot flood of cookieless GETs used to pin there for
-  five minutes per request, is now reserved for requests with bodies. This
-  also means a flood filling the challenge cache can no longer cause plain
-  page views to be refused: GETs never touch the `MAX_CHALLENGE_CACHE` budget.
-  Solved GETs work even with hand-written challenge forms that don't send
-  `original_method`.
+  challenge is pending. No POST body, no special replay rules, so this saves
+  some RAM and reduces risk during floods.
 - `LOG_RETENTION` now defaults to 48 hours instead of 30 days to ensure massive
   traffic isn't running you out of disk space
 - `PROXY_TARGET` now gives a useful error if it contains invalid elements (it
