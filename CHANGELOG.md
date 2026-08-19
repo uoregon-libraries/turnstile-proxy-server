@@ -39,6 +39,9 @@
 
 ### Changed
 
+- Challenged GET requests are no longer buffered or cached while their
+  challenge is pending. No POST body, no special replay rules, so this saves
+  some RAM and reduces risk during floods.
 - `LOG_RETENTION` now defaults to 48 hours instead of 30 days to ensure massive
   traffic isn't running you out of disk space
 - `PROXY_TARGET` now gives a useful error if it contains invalid elements (it

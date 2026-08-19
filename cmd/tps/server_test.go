@@ -776,27 +776,37 @@ func TestChallengeCacheBudget(t *testing.T) {
 	defer backend.Close()
 
 	// Room for exactly three pending challenges, counting the flat per-entry
-	// overhead every cached request is charged.
+	// overhead every cached request is charged. The fillers are bodyless POSTs
+	// because only non-GETs are cached at all — a GET's challenge needs
+	// nothing replayed, so it never touches this budget.
 	s := newTestServer(t, backend.URL).SetChallengeLimits(1<<20, 3*cachedRequestOverhead)
 
-	challenge := func() int {
-		req := httptest.NewRequest("GET", "/protected/data", nil)
+	challenge := func(method string) int {
+		req := httptest.NewRequest(method, "/protected/data", nil)
 		w := httptest.NewRecorder()
 		s.r.ServeHTTP(w, req)
 		return w.Code
 	}
 
 	for i := range 3 {
-		if code := challenge(); code != http.StatusForbidden {
+		if code := challenge(http.MethodPost); code != http.StatusForbidden {
 			t.Fatalf("challenge %d got status %d, want %d", i+1, code, http.StatusForbidden)
 		}
 	}
 
-	if code := challenge(); code != http.StatusServiceUnavailable {
+	if code := challenge(http.MethodPost); code != http.StatusServiceUnavailable {
 		t.Errorf("challenge past the budget got status %d, want %d", code, http.StatusServiceUnavailable)
 	}
 	if got := s.requestCache.ItemCount(); got != 3 {
 		t.Errorf("%d cached requests, want 3 (the shed request must not be cached)", got)
+	}
+
+	// A full cache sheds requests that need caching, and only those: a GET
+	// still gets its challenge, because a bot flood pinning the cache must not
+	// take page views — the traffic the site actually exists for — down with it.
+	if code := challenge(http.MethodGet); code != http.StatusForbidden {
+		t.Errorf("GET during a full cache got status %d, want %d (GETs are never shed)",
+			code, http.StatusForbidden)
 	}
 
 	// Expiring a pending challenge has to give its budget back, or the cache
@@ -810,8 +820,67 @@ func TestChallengeCacheBudget(t *testing.T) {
 	if got := s.cachedBytes.Load(); got != 0 {
 		t.Errorf("cachedBytes = %d after the pending challenges expired, want 0", got)
 	}
-	if code := challenge(); code != http.StatusForbidden {
+	if code := challenge(http.MethodPost); code != http.StatusForbidden {
 		t.Errorf("challenge after the cache drained got status %d, want %d", code, http.StatusForbidden)
+	}
+}
+
+// TestChallengedGetIsNotCached is the other half of the budget story: a GET
+// needs nothing replayed after its challenge, so it must cost the cache
+// nothing — no entry, no reservation, and no buffering of whatever body a bot
+// chose to send with it. The marked request ID is what the challenge page
+// carries in place of a cache key.
+func TestChallengedGetIsNotCached(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	defer backend.Close()
+
+	// The body limit is set tiny and the GET's body far over it: the body
+	// must be ignored outright, not buffered and refused.
+	s := newTestServer(t, backend.URL).SetChallengeLimits(64, 1<<20)
+
+	req := httptest.NewRequest(http.MethodGet, "/protected/data", strings.NewReader(strings.Repeat("x", 1<<16)))
+	w := httptest.NewRecorder()
+	s.r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("got status %d, want %d (challenge)", w.Code, http.StatusForbidden)
+	}
+	if got := s.requestCache.ItemCount(); got != 0 {
+		t.Errorf("%d cached requests after a challenged GET, want 0", got)
+	}
+	if got := s.cachedBytes.Load(); got != 0 {
+		t.Errorf("cachedBytes = %d after a challenged GET, want 0", got)
+	}
+	// The stub template renders "challenge page {{.RequestID}}"
+	if !strings.Contains(w.Body.String(), "challenge page "+uncachedGetIDPrefix) {
+		t.Errorf("challenge page does not carry a marked request ID:\n%s", w.Body.String())
+	}
+}
+
+// TestSolvedUncachedGetRedirects covers delivery: a GET whose challenge cached
+// nothing still lands on the page it asked for, via the same 303 a cached GET
+// always got. No original_method form field is sent, because the marked ID
+// alone must be enough — that's what keeps hand-written challenge forms that
+// predate the field working for ordinary page views.
+func TestSolvedUncachedGetRedirects(t *testing.T) {
+	s := newTestServerWithStore(t, "http://backend:8080", &fakeStore{})
+
+	events, w := solveChallenge(t, s, uncachedGetIDPrefix+"abc123", "")
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if got := w.Header().Get("Location"); got != "/protected/data" {
+		t.Errorf("Location = %q, want the original URL", got)
+	}
+	if w.Result().Cookies() == nil {
+		t.Error("no cookie was set; the client solved the challenge and should be verified")
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1: %+v", len(events), events)
+	}
+	if events[0].Outcome != db.OutcomeVerifyOK {
+		t.Errorf("outcome = %q, want %q", events[0].Outcome, db.OutcomeVerifyOK)
 	}
 }
 

@@ -304,14 +304,18 @@ func TestCustomTemplateRendersChallenge(t *testing.T) {
 		}
 	}
 
-	// The request ID in the form has to be the one TPS cached the request
-	// under, or the replay after verification can't find it
+	// The request ID in the form has to be one the verify path can act on.
+	// This was a GET, so that means the uncached-GET mark — and nothing in the
+	// request cache, which challenged GETs never touch.
 	_, after, found := strings.Cut(body, `name="request_id" value="`)
 	if !found {
 		t.Fatalf("challenge page has no request_id input:\n%s", body)
 	}
 	id, _, _ := strings.Cut(after, `"`)
-	if _, found := s.requestCache.Get(id); !found {
-		t.Errorf("request ID %q from the page is not in the request cache", id)
+	if !strings.HasPrefix(id, uncachedGetIDPrefix) {
+		t.Errorf("request ID %q from the page is not marked as an uncached GET", id)
+	}
+	if got := s.requestCache.ItemCount(); got != 0 {
+		t.Errorf("%d cached requests after a challenged GET, want 0", got)
 	}
 }
