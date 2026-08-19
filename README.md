@@ -95,6 +95,69 @@ Make sure you use custom challenge / failure templates with a link to contact
 you. If you know enough about the various failure modes, put workarounds in
 your challenge / failure pages!
 
+## Bypass Keys
+
+Sometimes we need to allow bots (e.g., researchers needing to scrape data in
+bulk). Enter bypass keys: manually provisioned credentials that skip the
+challenge without giving completely unrestricted access. Provisioning a key
+requires an expiration, a maximum rate, a "burst" allowance, and a daily
+request cap.
+
+*Note*: as with anything protected by TPS, all limits here are strictly for
+assets protected by TPS in the first place.
+
+*Note 2*: keys live in the event log database, so `DB_PATH` must be set.
+
+Key provisioning looks a bit like this:
+
+```bash
+tps key add -label "wilson-lab" -rate 1/2s -burst 10 \
+    -cidr 203.0.113.0/24 -expires 2027-03-31 -daily-cap 20000 \
+    -notes "corpus crawl, contact wilson@example.edu"
+```
+
+This creates a key with a one-request-per-two-seconds limit, allowing up to 10
+requests in a batch without giving any error to the client, and a maximum of
+20,000 requests in any given day.
+
+The key is printed once at creation and never stored (the db holds a hash).
+**Copy it immediately** or it will be lost.
+
+Listing and revoking keys is easy:
+
+```
+tps key list
+tps key revoke X
+```
+
+A request using a key looks like this:
+
+```bash
+curl -H "X-TPS-Key: tps_..." https://yoursite.example/search?q=stuff
+curl -H "Authorization: Bearer tps_..." https://yoursite.example/search?q=stuff
+```
+
+Other info:
+
+- Requests under the rate limit are proxied immediately. A short burst
+  beyond it is *held* briefly (up to ~2s) rather than refused, so a simple
+  sequential scraper runs at exactly its permitted pace without ever seeing an
+  error. Pushing harder than that gets `429` responses with a `Retry-After`
+  header saying when to try again.
+- The daily cap is not required, and there won't be a cap if you don't set one.
+  If your rate limits are sane, the daily cap can usually be omitted. Requests
+  beyond the daily cap get a `429` reponse and `Retry-After` headers.
+- A bad key (unknown, expired, revoked, or used from outside its networks)
+  falls back to the normal challenge, and the response carries an
+  `X-TPS-Key-Status` header (`unknown` / `expired` / `revoked` / `wrong_ip`)
+  so the client can tell what happened.
+- The key never reaches your backend: TPS strips `X-TPS-Key` (and an
+  `Authorization` header holding a `tps_` token) before proxying. Other
+  `Authorization` values pass through untouched.
+- Every key-authorized request is logged like any other, tagged with the key,
+  so `tps key list` can show per-key traffic and the raw events support
+  questions like "which networks is this key really coming from".
+
 ## Docker Image
 
 The docker image is set up for production use, and won't be suitable for dev
@@ -244,7 +307,7 @@ included. Each bucket reports four counts:
 }
 ```
 
-Reporting needs the event log, so it returns `503` when `LOG_DB_PATH` is unset.
+Reporting needs the event log, so it returns `503` when `DB_PATH` is unset.
 
 ### Smart vs. dumb bots (`rendered` / the beacon)
 

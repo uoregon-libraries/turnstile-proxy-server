@@ -287,10 +287,12 @@ func TestChargeToken(t *testing.T) {
 }
 
 // fakeStore captures logged events in memory so tests can assert on the
-// decisions handleProxy records.
+// decisions handleProxy records, and serves whatever bypass keys a test
+// plants in it.
 type fakeStore struct {
 	mu     sync.Mutex
 	events []db.Event
+	keys   []db.Key
 }
 
 func (f *fakeStore) LogEvent(e db.Event) {
@@ -304,6 +306,22 @@ func (f *fakeStore) Close() error { return nil }
 func (f *fakeStore) Report(time.Time, time.Time, time.Duration) ([]db.CountBucket, error) {
 	return nil, db.ErrReportingUnavailable
 }
+
+func (f *fakeStore) CreateKey(k db.Key) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keys = append(f.keys, k)
+	return int64(len(f.keys)), nil
+}
+
+func (f *fakeStore) ListKeys() ([]db.Key, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]db.Key(nil), f.keys...), nil
+}
+
+func (f *fakeStore) RevokeKey(int64) error                    { return nil }
+func (f *fakeStore) KeyUsage() (map[int64]db.KeyUsage, error) { return nil, nil }
 
 func (f *fakeStore) snapshot() []db.Event {
 	f.mu.Lock()

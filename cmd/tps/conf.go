@@ -109,7 +109,7 @@ type config struct {
 	turnstileSiteKey   string
 	jwtSigningKey      string
 	proxyTarget        string
-	logDBPath          string
+	dbPath             string
 	logRetention       time.Duration
 	templatePath       string
 	tokenLifetime      time.Duration
@@ -135,9 +135,14 @@ func getenv() (config, []string) {
 	conf.turnstileSecretKey = os.Getenv("TURNSTILE_SECRET_KEY")
 	conf.turnstileSiteKey = os.Getenv("TURNSTILE_SITE_KEY")
 	conf.jwtSigningKey = os.Getenv("JWT_SIGNING_KEY")
-	conf.logDBPath = os.Getenv("LOG_DB_PATH")
 	conf.templatePath = os.Getenv("TEMPLATE_PATH")
 	conf.adminSecret = os.Getenv("ADMIN_SECRET")
+
+	var dbPath, dbErr = resolveDBPath()
+	conf.dbPath = dbPath
+	if dbErr != nil {
+		errs = append(errs, dbErr.Error())
+	}
 
 	if conf.bindAddr == "" {
 		errs = append(errs, "BIND_ADDR is not set")
@@ -190,6 +195,29 @@ func getenv() (config, []string) {
 	}
 
 	return conf, errs
+}
+
+// resolveDBPath reads the SQLite database path from the environment. DB_PATH
+// is the current name; LOG_DB_PATH is its original, deprecated when the
+// database grew beyond the event log (bypass keys live there too) but honored
+// until v4.0.0, because a rename is not a reason to break a working config.
+// The old name draws a warning; both names set to different values is an
+// error, since TPS won't guess which database the operator meant.
+func resolveDBPath() (string, error) {
+	var current = os.Getenv("DB_PATH")
+	var deprecated = os.Getenv("LOG_DB_PATH")
+	if deprecated != "" {
+		logger.Warn("LOG_DB_PATH is deprecated and will be removed in v4.0.0; rename it to DB_PATH")
+	}
+	switch {
+	case current != "" && deprecated != "" && current != deprecated:
+		return "", fmt.Errorf("DB_PATH %q and LOG_DB_PATH %q disagree; LOG_DB_PATH is deprecated, so set only DB_PATH",
+			current, deprecated)
+	case current != "":
+		return current, nil
+	default:
+		return deprecated, nil
+	}
 }
 
 // parseBoolEnv reads the named env var as a boolean, returning def when the

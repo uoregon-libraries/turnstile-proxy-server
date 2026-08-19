@@ -15,7 +15,9 @@ import (
 	sloggin "github.com/samber/slog-gin"
 )
 
-var logger *slog.Logger
+// logger starts as slog's default so config helpers can log before main
+// installs the real one built from -log-level.
+var logger = slog.Default()
 
 // envFile is the path given by the optional -env-file flag: a KEY=VALUE file
 // loaded into the environment before config is read (real env vars still win).
@@ -41,6 +43,8 @@ func main() {
 		serve()
 	case "vacuum":
 		vacuum()
+	case "key":
+		keyCommand(flag.Args()[1:])
 	case "help":
 		help()
 	default:
@@ -66,17 +70,21 @@ func parseLogLevel(name string) (slog.Level, bool) {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [-env-file=path] [serve|vacuum|help]")
+	fmt.Fprintln(os.Stderr, "Usage: tps [-log-level=debug|info|warn|error] [-env-file=path] [serve|vacuum|key|help]")
 }
 
 func help() {
 	fmt.Println("Subcommands:")
 	fmt.Println("- serve: run the proxy server")
-	fmt.Println("- vacuum: compact the event log database at LOG_DB_PATH, returning space freed by")
+	fmt.Println("- vacuum: compact the event log database at DB_PATH, returning space freed by")
 	fmt.Println("                 pruning to the OS, and enable incremental auto-vacuum so future prunes")
 	fmt.Println("                 shrink the file on their own. Safe while a TPS instance is running (requests")
 	fmt.Println("                 are never delayed), though some analytics events may be dropped during the")
 	fmt.Println("                 rebuild. Needs temporary disk space up to the size of the database.")
+	fmt.Println("- key: manage bypass keys — provisioned, rate-limited credentials that skip the")
+	fmt.Println("                 challenge (for vetted scrapers). 'tps key' alone shows its own usage;")
+	fmt.Println("                 subcommands are add, list, and revoke. Keys live in the event log")
+	fmt.Println("                 database, so this needs DB_PATH.")
 	fmt.Println("")
 	fmt.Println("Flags:")
 	fmt.Println(`- -log-level (optional): log verbosity, one of "debug", "info", "warn", or "error".`)
@@ -89,15 +97,19 @@ func help() {
 }
 
 // vacuum compacts the event log database and flips it into incremental
-// auto-vacuum mode. It only needs LOG_DB_PATH, so it deliberately skips the
+// auto-vacuum mode. It only needs DB_PATH, so it deliberately skips the
 // full getenv() validation — running it on a box without the serve config
 // should work.
 func vacuum() {
 	applyEnvFile()
 
-	var path = os.Getenv("LOG_DB_PATH")
+	var path, perr = resolveDBPath()
+	if perr != nil {
+		logger.Error("Cannot determine the database path", "error", perr)
+		os.Exit(1)
+	}
 	if path == "" {
-		logger.Error("LOG_DB_PATH is not set; there is no event log database to vacuum")
+		logger.Error("DB_PATH is not set; there is no event log database to vacuum")
 		os.Exit(1)
 	}
 
@@ -120,12 +132,12 @@ func serve() {
 	}
 
 	var store db.Store
-	if conf.logDBPath == "" {
-		logger.Info("LOG_DB_PATH is not set; event logging is disabled")
+	if conf.dbPath == "" {
+		logger.Info("DB_PATH is not set; event logging is disabled")
 		store = db.NewNoopStore()
 	} else {
 		var err error
-		store, err = db.NewStore(conf.logDBPath, conf.logRetention, logger)
+		store, err = db.NewStore(conf.dbPath, conf.logRetention, logger)
 		if err != nil {
 			logger.Error("Cannot open event log database", "error", err)
 			os.Exit(1)
@@ -157,6 +169,9 @@ func serve() {
 	var err = server.Run(conf.bindAddr)
 	if err != nil {
 		logger.Error("Could not start server", "error", err)
+		// os.Exit skips the deferred Close, which is what drains queued
+		// analytics events; a crashing server shouldn't also lose them
+		store.Close()
 		os.Exit(1)
 	}
 }

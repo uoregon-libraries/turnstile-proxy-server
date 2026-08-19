@@ -2,12 +2,16 @@
 
 ## Unreleased
 
-Various bug-fixes and improvements, nothing amazing, nothing breaking.
-
 ### Added
 
 - New config: `MAX_CHALLENGE_BODY` and `MAX_CHALLENGE_CACHE`. These prevent TPS
   from letting bots do trivial DoS attacks by sending unlimited POST requests.
+- Bypass keys: provisioned credentials that let vetted clients (careful
+  research scrapers, mostly) through TPS without solving a challenge. Requires
+  a manual command to provision keys, and requires specifying rate limits to
+  avoid badly written scrapers from DoSing your site. `DB_PATH` is required
+  to use them, as they have to be persisted and right now that means the event
+  log.... For details, see the README's "Bypass Keys" section.
 
 ### Fixed
 
@@ -25,6 +29,11 @@ Various bug-fixes and improvements, nothing amazing, nothing breaking.
   submission can't be replayed safely, so on expiration users get a message
   saying to resubmit.
 - Minor fix in how `solved` counts worked
+- A client that disconnects while its just-solved request is being replayed now
+  cancels the backend request instead of leaving it running with nobody
+  waiting on the response.
+- A server that dies on a startup/runtime error no longer discards analytics
+  events still queued for the database.
 - Secrets in env vars are no longer written to the log (`JWT_SIGNING_KEY` and
   `TURNSTILE_SECRET_KEY`)
 
@@ -36,6 +45,9 @@ Various bug-fixes and improvements, nothing amazing, nothing breaking.
   can only contain a scheme and host). It had been silently ignoring other
   parts, now it actually lets you know it's invalid. If your backend needs a
   path prefix, add it in your front proxy.
+- `LOG_DB_PATH` is now `DB_PATH`: the database has outgrown its name, holding
+  bypass keys, aggregated stats, *and* the event log. The old name will keep
+  working until v4.0.0.
 
 ### Migration
 
@@ -44,6 +56,7 @@ Various bug-fixes and improvements, nothing amazing, nothing breaking.
   instead of building your own forms unless you have a *really* good reason.
 - If you used `-env-file`, you may have secrets logged in plaintext. Rotate
   your keys (`JWT_SIGNING_KEY` and `TURNSTILE_SECRET_KEY`) if possible.
+- Change `LOG_DB_PATH` to `DB_PATH`
 
 ## v3.0.0
 

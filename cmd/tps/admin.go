@@ -89,7 +89,7 @@ func (s *Server) handleReport(c *gin.Context) {
 	var buckets, err = s.db.Report(start, end, bucket)
 	if err != nil {
 		if errors.Is(err, db.ErrReportingUnavailable) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "event logging is disabled; set LOG_DB_PATH to enable reports"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "event logging is disabled; set DB_PATH to enable reports"})
 			return
 		}
 		s.logger.Error("report query failed", "period", period, "error", err)

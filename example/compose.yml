@@ -13,7 +13,7 @@ services:
       GIN_MODE: "release"
       BIND_ADDR: ":8080"
       PROXY_TARGET: "http://caddy:8081"
-      LOG_DB_PATH: "/var/local/tps/data/tps.db"
+      DB_PATH: "/var/local/tps/data/tps.db"
     volumes:
       - tps-data:/var/local/tps/data
     # No depends_on: caddy fronts tps and tps proxies back to caddy, so
