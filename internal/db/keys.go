@@ -9,8 +9,8 @@ import (
 
 // ErrKeysUnavailable is returned by the key methods when event logging is
 // disabled: bypass keys live in the same database as the event log, so
-// without a LOG_DB_PATH there is nowhere to keep them.
-var ErrKeysUnavailable = errors.New("event logging is disabled; bypass keys need LOG_DB_PATH to be set")
+// without a DB_PATH there is nowhere to keep them.
+var ErrKeysUnavailable = errors.New("event logging is disabled; bypass keys need DB_PATH to be set")
 
 // ErrNoSuchKey is returned by [Store.RevokeKey] when no active key has the
 // given id — it never existed, or it was already revoked.

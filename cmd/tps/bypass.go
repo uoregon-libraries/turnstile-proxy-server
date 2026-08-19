@@ -347,7 +347,7 @@ func (s *Server) reloadBypassKeys() error {
 func (s *Server) startBypassRefresh(ctx context.Context) {
 	var err = s.reloadBypassKeys()
 	if errors.Is(err, db.ErrKeysUnavailable) {
-		s.logger.Info("Bypass keys are disabled; set LOG_DB_PATH to enable them")
+		s.logger.Info("Bypass keys are disabled; set DB_PATH to enable them")
 		return
 	}
 	if err != nil {

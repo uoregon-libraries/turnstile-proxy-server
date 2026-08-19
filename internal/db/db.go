@@ -503,7 +503,7 @@ func Vacuum(path string) (before, after int64, err error) {
 type noopStore struct{}
 
 // NewNoopStore returns a [Store] that discards every event. Use it when no
-// LOG_DB_PATH is configured.
+// DB_PATH is configured.
 func NewNoopStore() Store { return noopStore{} }
 
 func (noopStore) LogEvent(Event) {}

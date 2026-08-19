@@ -4,7 +4,7 @@ services:
     environment:
       GIN_MODE: "release"
       BIND_ADDR: ":8080"
-      LOG_DB_PATH: "/var/local/tps/data/tps.db"
+      DB_PATH: "/var/local/tps/data/tps.db"
     volumes:
       - custom-templates:/var/local/tps/templates
       - tps-data:/var/local/tps/data

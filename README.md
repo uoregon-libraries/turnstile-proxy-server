@@ -106,7 +106,7 @@ request cap.
 *Note*: as with anything protected by TPS, all limits here are strictly for
 assets protected by TPS in the first place.
 
-*Note 2*: keys live in the event log database, so `LOG_DB_PATH` must be set.
+*Note 2*: keys live in the event log database, so `DB_PATH` must be set.
 
 Key provisioning looks a bit like this:
 
@@ -307,7 +307,7 @@ included. Each bucket reports four counts:
 }
 ```
 
-Reporting needs the event log, so it returns `503` when `LOG_DB_PATH` is unset.
+Reporting needs the event log, so it returns `503` when `DB_PATH` is unset.
 
 ### Smart vs. dumb bots (`rendered` / the beacon)
 

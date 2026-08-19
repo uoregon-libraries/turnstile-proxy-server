@@ -47,20 +47,23 @@ func printKeyUsage() {
       permanently kill a key; a running server honors it within `+bypassRefreshInterval.String())
 }
 
-// keyStore opens the bypass-key database. Keys live alongside the event log,
-// so like "tps vacuum" this needs only LOG_DB_PATH, not the full serve
-// config. Retention 0 keeps the store from pruning events out from under a
-// concurrently running server.
+// keyStore opens the bypass-key database. Like "tps vacuum" this needs only
+// DB_PATH, not the full serve config. Retention 0 keeps the store from pruning
+// events out from under a concurrently running server.
 func keyStore() db.Store {
 	applyEnvFile()
-	var path = os.Getenv("LOG_DB_PATH")
+	var path, perr = resolveDBPath()
+	if perr != nil {
+		logger.Error("Cannot determine the database path", "error", perr)
+		os.Exit(1)
+	}
 	if path == "" {
-		logger.Error("LOG_DB_PATH is not set; bypass keys live in the event log database")
+		logger.Error("DB_PATH is not set")
 		os.Exit(1)
 	}
 	var store, err = db.NewStore(path, 0, logger)
 	if err != nil {
-		logger.Error("Cannot open event log database", "path", path, "error", err)
+		logger.Error("Cannot open database", "path", path, "error", err)
 		os.Exit(1)
 	}
 	return store
@@ -166,7 +169,7 @@ func keyList() {
 	// aggregate shouldn't hide the keys themselves.
 	usage, uerr := store.KeyUsage()
 	if uerr != nil {
-		logger.Warn("Cannot read key usage from the event log", "error", uerr)
+		logger.Warn("Cannot read key usage", "error", uerr)
 	}
 
 	var now = time.Now()

@@ -229,7 +229,7 @@ func TestValidateChallengeLimits(t *testing.T) {
 // running it happens to have exported.
 var configEnvVars = []string{
 	"BIND_ADDR", "TURNSTILE_SECRET_KEY", "TURNSTILE_SITE_KEY", "JWT_SIGNING_KEY",
-	"PROXY_TARGET", "LOG_DB_PATH", "LOG_RETENTION", "TEMPLATE_PATH", "TOKEN_LIFETIME",
+	"PROXY_TARGET", "DB_PATH", "LOG_DB_PATH", "LOG_RETENTION", "TEMPLATE_PATH", "TOKEN_LIFETIME",
 	"TOKEN_BIND_USER_AGENT", "TOKEN_REQUEST_BUDGET", "TOKEN_IP_SWITCH_COST",
 	"MAX_CHALLENGE_BODY", "MAX_CHALLENGE_CACHE", "ADMIN_SECRET",
 	"PROXY_TARGETS", "CHALLENGE_MODE",
@@ -295,14 +295,14 @@ func TestGetenv(t *testing.T) {
 			t.Errorf("templatePath = %q, want the default", conf.templatePath)
 		}
 		// Unset means the feature is off, not that it's misconfigured
-		if conf.logDBPath != "" || conf.adminSecret != "" {
-			t.Errorf("logDBPath = %q and adminSecret = %q, want both empty", conf.logDBPath, conf.adminSecret)
+		if conf.dbPath != "" || conf.adminSecret != "" {
+			t.Errorf("dbPath = %q and adminSecret = %q, want both empty", conf.dbPath, conf.adminSecret)
 		}
 	})
 
 	t.Run("every setting is read from the environment", func(t *testing.T) {
 		var env = requiredEnv()
-		env["LOG_DB_PATH"] = "/var/lib/tps/events.db"
+		env["DB_PATH"] = "/var/lib/tps/events.db"
 		env["LOG_RETENTION"] = "72h"
 		env["TEMPLATE_PATH"] = "/srv/templates"
 		env["TOKEN_LIFETIME"] = "30m"
@@ -322,7 +322,7 @@ func TestGetenv(t *testing.T) {
 		var got = config{
 			bindAddr: conf.bindAddr, turnstileSecretKey: conf.turnstileSecretKey,
 			turnstileSiteKey: conf.turnstileSiteKey, jwtSigningKey: conf.jwtSigningKey,
-			proxyTarget: conf.proxyTarget, logDBPath: conf.logDBPath,
+			proxyTarget: conf.proxyTarget, dbPath: conf.dbPath,
 			logRetention: conf.logRetention, templatePath: conf.templatePath,
 			tokenLifetime: conf.tokenLifetime, tokenBindUserAgent: conf.tokenBindUserAgent,
 			tokenRequestBudget: conf.tokenRequestBudget, tokenIPSwitchCost: conf.tokenIPSwitchCost,
@@ -332,7 +332,7 @@ func TestGetenv(t *testing.T) {
 		var want = config{
 			bindAddr: ":8080", turnstileSecretKey: "turnstile-secret",
 			turnstileSiteKey: "turnstile-site", jwtSigningKey: "signing-key",
-			proxyTarget: "http://app:8080", logDBPath: "/var/lib/tps/events.db",
+			proxyTarget: "http://app:8080", dbPath: "/var/lib/tps/events.db",
 			logRetention: 72 * time.Hour, templatePath: "/srv/templates",
 			tokenLifetime: 30 * time.Minute, tokenBindUserAgent: false,
 			tokenRequestBudget: 50, tokenIPSwitchCost: 3,
@@ -341,6 +341,70 @@ func TestGetenv(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("config =\n%+v\nwant\n%+v", got, want)
+		}
+	})
+
+	t.Run("the deprecated LOG_DB_PATH still works, with a warning", func(t *testing.T) {
+		var env = requiredEnv()
+		env["LOG_DB_PATH"] = "/var/lib/tps/events.db"
+		setConfigEnv(t, env)
+
+		var buf bytes.Buffer
+		var saved = logger
+		logger = slog.New(slog.NewTextHandler(&buf, nil))
+		defer func() { logger = saved }()
+
+		conf, errs := getenv()
+		if len(errs) != 0 {
+			t.Fatalf("the deprecated name reported errors: %v", errs)
+		}
+		if conf.dbPath != "/var/lib/tps/events.db" {
+			t.Errorf("dbPath = %q, want the LOG_DB_PATH value", conf.dbPath)
+		}
+		var logged = buf.String()
+		if !strings.Contains(logged, "deprecated") || !strings.Contains(logged, "DB_PATH") {
+			t.Errorf("log doesn't warn about the deprecation and name the replacement:\n%s", logged)
+		}
+	})
+
+	t.Run("DB_PATH and LOG_DB_PATH agreeing is only a warning", func(t *testing.T) {
+		var env = requiredEnv()
+		env["DB_PATH"] = "/var/lib/tps/events.db"
+		env["LOG_DB_PATH"] = "/var/lib/tps/events.db"
+		setConfigEnv(t, env)
+
+		var saved = logger
+		logger = slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+		defer func() { logger = saved }()
+
+		conf, errs := getenv()
+		if len(errs) != 0 {
+			t.Fatalf("agreeing names reported errors: %v", errs)
+		}
+		if conf.dbPath != "/var/lib/tps/events.db" {
+			t.Errorf("dbPath = %q, want the shared value", conf.dbPath)
+		}
+	})
+
+	t.Run("DB_PATH and LOG_DB_PATH disagreeing is an error", func(t *testing.T) {
+		var env = requiredEnv()
+		env["DB_PATH"] = "/new/tps.db"
+		env["LOG_DB_PATH"] = "/old/tps.db"
+		setConfigEnv(t, env)
+
+		var saved = logger
+		logger = slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+		defer func() { logger = saved }()
+
+		_, errs := getenv()
+		var found bool
+		for _, e := range errs {
+			if strings.Contains(e, "DB_PATH") && strings.Contains(e, "LOG_DB_PATH") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("errs = %v, want one naming both DB_PATH and LOG_DB_PATH", errs)
 		}
 	})
 
