@@ -36,9 +36,17 @@ PROXY_TARGET="http://localhost"
 # on-host Caddy, you'll have to trust the external proxy *and* Caddy's internal
 # IP address.
 #
+# The special entry "private_ranges" expands to everything the default trusts
+# (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, ::1/128, fc00::/7).
+# It can be the whole value or sit in the list alongside other entries, so the
+# CDN case above can be TRUSTED_PROXIES="private_ranges,<CDN egress ranges>"
+# instead of spelling the private networks back out.
+#
 # The special value "none" trusts no one: forwarded headers are always ignored,
 # and every client is its connection's address. This is not generally
-# recommended, as TPS isn't meant to get direct traffic.
+# recommended, as TPS isn't meant to get direct traffic. Unlike
+# "private_ranges", it must be the entire value: "none" next to other entries
+# is a contradiction, and TPS refuses to start rather than guess.
 #TRUSTED_PROXIES="10.1.2.3"
 
 # Where will you record the stats? TPS logs one decision event per request

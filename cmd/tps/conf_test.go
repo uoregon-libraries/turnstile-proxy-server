@@ -233,13 +233,19 @@ func TestParseTrustedProxiesEnv(t *testing.T) {
 		want    []string
 		wantErr string
 	}{
-		{name: "unset keeps the default", value: "", want: defaultTrustedProxies},
+		{name: "unset keeps the default", value: "", want: privateRanges},
 		{name: "a single address", value: "203.0.113.7", want: []string{"203.0.113.7"}},
 		{name: "a mixed list with spaces and a stray comma",
 			value: " 203.0.113.7, 198.51.100.0/24, ,2001:db8::/32",
 			want:  []string{"203.0.113.7", "198.51.100.0/24", "2001:db8::/32"}},
+		{name: "private_ranges alone matches the default", value: "private_ranges", want: privateRanges},
+		{name: "private_ranges expands in place within a list",
+			value: "203.0.113.7,PRIVATE_RANGES,198.51.100.0/24",
+			want:  append(append([]string{"203.0.113.7"}, privateRanges...), "198.51.100.0/24")},
 		{name: "none trusts no peer", value: "none", want: []string{}},
 		{name: "NONE in any case", value: "NONE", want: []string{}},
+		{name: "none in a list is a contradiction", value: "none,10.0.0.1",
+			want: []string{"10.0.0.1"}, wantErr: `"none" must be the whole value`},
 		{name: "an entry that is not an address", value: "10.0.0.1,front-proxy.example",
 			want: []string{"10.0.0.1"}, wantErr: `"front-proxy.example"`},
 		{name: "a malformed CIDR", value: "10.0.0.0/33", wantErr: `"10.0.0.0/33"`},
@@ -345,8 +351,8 @@ func TestGetenv(t *testing.T) {
 		if conf.templatePath != "/var/local/tps/templates" {
 			t.Errorf("templatePath = %q, want the default", conf.templatePath)
 		}
-		if !slices.Equal(conf.trustedProxies, defaultTrustedProxies) {
-			t.Errorf("trustedProxies = %v, want the default %v", conf.trustedProxies, defaultTrustedProxies)
+		if !slices.Equal(conf.trustedProxies, privateRanges) {
+			t.Errorf("trustedProxies = %v, want the default %v", conf.trustedProxies, privateRanges)
 		}
 		// Unset means the feature is off, not that it's misconfigured
 		if conf.dbPath != "" || conf.adminSecret != "" {

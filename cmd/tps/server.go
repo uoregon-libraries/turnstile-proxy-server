@@ -47,14 +47,14 @@ const (
 	cachedRequestOverhead = 4096
 )
 
-// defaultTrustedProxies lists the networks from which TPS honors
-// X-Forwarded-* headers when TRUSTED_PROXIES isn't set. TPS is intended to
-// run behind a reverse proxy on a private network and must never be exposed
-// to the public internet directly, so loopback and the RFC 1918 / RFC 4193
-// ranges cover the normal deployment; operators whose front proxy reaches
-// TPS from elsewhere, or who want to trust only the proxy's own address,
-// override this via TRUSTED_PROXIES.
-var defaultTrustedProxies = []string{
+// privateRanges is loopback plus the RFC 1918 / RFC 4193 ranges: the entire
+// trusted-proxy list when TRUSTED_PROXIES isn't set, and what its
+// "private_ranges" entry expands to. TPS is intended to run behind a reverse
+// proxy on a private network and must never be exposed to the public
+// internet directly, so these cover the normal deployment; operators whose
+// front proxy reaches TPS from elsewhere, or who want to trust only the
+// proxy's own address, override the list via TRUSTED_PROXIES.
+var privateRanges = []string{
 	"127.0.0.0/8",
 	"10.0.0.0/8",
 	"172.16.0.0/12",
@@ -120,7 +120,7 @@ func NewServer(router *gin.Engine, store db.Store) *Server {
 	var render = newTemplateStore(slog.Default(), gin.IsDebugging())
 
 	router.HTMLRender = render
-	var err = router.SetTrustedProxies(defaultTrustedProxies)
+	var err = router.SetTrustedProxies(privateRanges)
 	if err != nil {
 		panic(fmt.Sprintf("invalid trusted proxy CIDR: %s", err))
 	}
