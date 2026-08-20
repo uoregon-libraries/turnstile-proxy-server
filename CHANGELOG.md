@@ -42,13 +42,11 @@
 - Challenged GET requests are no longer buffered or cached while their
   challenge is pending. No POST body, no special replay rules, so this saves
   some RAM and reduces risk during floods.
-- Serving a challenge no longer writes to the text log at INFO/WARN level: the
-  per-request middleware line for 4xx responses and TPS's own "serving
-  challenge" line are both DEBUG now (`-log-level debug` brings them back).
-  A 403 is TPS's most common response and each one was two log lines, which
-  during a flood is enough journal churn to rotate away everything else. The
-  event database still records every decision. Proxied requests and server
-  errors log as before.
+- Serving challenges (the *core purpose* of TPS) no longer pukes a torrent of
+  warnings to the log. All messages are basically debug, which should be
+  silenced in production environments. Caddy will have info about response
+  status codes, so gin doesn't need to output this, and our database contains
+  the actual action data if that needs to be scrutinized.
 - `LOG_RETENTION` now defaults to 48 hours instead of 30 days to ensure massive
   traffic isn't running you out of disk space
 - `PROXY_TARGET` now gives a useful error if it contains invalid elements (it
