@@ -29,15 +29,16 @@ PROXY_TARGET="http://localhost"
 # the analytics event log, so this list is what keeps a machine that can reach
 # TPS from spoofing all three.
 #
-# The default trusts loopback and the private ranges (127.0.0.0/8, 10.0.0.0/8,
-# 172.16.0.0/12, 192.168.0.0/16, ::1/128, fc00::/7), which covers the normal
-# same-host or Docker-network front proxy with no configuration. Consider
-# narrowing it to your front proxy's actual address so no other internal host
-# can forge client IPs. Widen it if a hop reaches TPS from outside those
-# ranges -- e.g. behind Cloudflare (or any CDN), the CDN's egress ranges must
-# be listed alongside your front proxy's address or TPS will see CDN edge IPs
-# as the clients. The special value "none" trusts no one: forwarded headers
-# are always ignored, and every client is its connection's address.
+# Leaving this unset sticks with the pre-3.1.0 system of trusting all private
+# ranges. This is insufficient if you have a separate host (Cloudflare / CDN,
+# HAProxy fronting multiple systems, etc.), in which case you'll have to
+# explicitly list all trusted networks. Because TPS typically runs alongside an
+# on-host Caddy, you'll have to trust the external proxy *and* Caddy's internal
+# IP address.
+#
+# The special value "none" trusts no one: forwarded headers are always ignored,
+# and every client is its connection's address. This is not generally
+# recommended, as TPS isn't meant to get direct traffic.
 #TRUSTED_PROXIES="10.1.2.3"
 
 # Where will you record the stats? TPS logs one decision event per request

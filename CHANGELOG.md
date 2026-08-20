@@ -7,14 +7,7 @@
 - New config: `MAX_CHALLENGE_BODY` and `MAX_CHALLENGE_CACHE`. These prevent TPS
   from letting bots do trivial DoS attacks by sending unlimited POST requests.
 - New config: `TRUSTED_PROXIES` controls which peers TPS believes about the
-  real client IP (via `X-Forwarded-For`). It was previously hardcoded to
-  loopback plus the private ranges; that's still the default, but now you can
-  narrow it to your front proxy's actual address (so other internal hosts
-  can't spoof client IPs at TPS) or widen it when a hop reaches TPS from
-  outside the private ranges (e.g. a CDN in front of your front proxy). The
-  special value `none` ignores forwarded headers entirely. The client IP
-  feeds token IP tracking, bypass keys' CIDR restrictions, and analytics, so
-  it matters more than it used to. See `env-example` for details.
+  real client IP (via `X-Forwarded-For`). See `env-example` for details.
 - Bypass keys: provisioned credentials that let vetted clients (careful
   research scrapers, mostly) through TPS without solving a challenge. Requires
   a manual command to provision keys, and requires specifying rate limits to
