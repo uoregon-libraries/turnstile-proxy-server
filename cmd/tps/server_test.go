@@ -37,6 +37,54 @@ func TestSetProxyTarget(t *testing.T) {
 	}
 }
 
+func TestSetTrustedProxies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := NewServer(gin.New(), db.NewNoopStore())
+
+	// clientIP is what the server would treat as the client's address for a
+	// request from the given peer carrying the given X-Forwarded-For
+	clientIP := func(peer, xff string) string {
+		c := gin.CreateTestContextOnly(httptest.NewRecorder(), s.r)
+		c.Request = httptest.NewRequest("GET", "/protected/data", nil)
+		c.Request.RemoteAddr = net.JoinHostPort(peer, "12345")
+		if xff != "" {
+			c.Request.Header.Set("X-Forwarded-For", xff)
+		}
+		return c.ClientIP()
+	}
+
+	// The defaults: a private peer's forwarded header is honored, a public
+	// peer's is not
+	if got := clientIP("10.0.0.1", "203.0.113.9"); got != "203.0.113.9" {
+		t.Errorf("client IP via private peer = %q, want the forwarded 203.0.113.9", got)
+	}
+	if got := clientIP("192.0.2.1", "203.0.113.9"); got != "192.0.2.1" {
+		t.Errorf("client IP via public peer = %q, want the peer's own 192.0.2.1", got)
+	}
+
+	// A custom list replaces the default rather than extending it
+	s.SetTrustedProxies([]string{"192.0.2.0/24"})
+	if got := clientIP("192.0.2.1", "203.0.113.9"); got != "203.0.113.9" {
+		t.Errorf("client IP via newly-trusted peer = %q, want the forwarded 203.0.113.9", got)
+	}
+	if got := clientIP("10.0.0.1", "203.0.113.9"); got != "10.0.0.1" {
+		t.Errorf("client IP via no-longer-trusted peer = %q, want the peer's own 10.0.0.1", got)
+	}
+
+	// An empty list trusts no peer at all
+	s.SetTrustedProxies([]string{})
+	if got := clientIP("10.0.0.1", "203.0.113.9"); got != "10.0.0.1" {
+		t.Errorf("client IP with no trusted proxies = %q, want the peer's own 10.0.0.1", got)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Error("SetTrustedProxies accepted an unparseable entry, want a panic")
+		}
+	}()
+	s.SetTrustedProxies([]string{"front-proxy.example"})
+}
+
 // signCookie signs the given claims with the server's key and returns the raw
 // token string, ready to be sent as the session cookie
 func signCookie(t *testing.T, s *Server, claims jwt.MapClaims) string {

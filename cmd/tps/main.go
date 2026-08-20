@@ -165,6 +165,7 @@ func serve() {
 		SetSecretKey(conf.turnstileSecretKey).
 		SetSiteKey(conf.turnstileSiteKey).
 		SetProxyTarget(conf.proxyTarget).
+		SetTrustedProxies(conf.trustedProxies).
 		SetJWTSigningKey(conf.jwtSigningKey).
 		SetTokenLifetime(conf.tokenLifetime).
 		SetClientBinding(conf.tokenBindUserAgent).

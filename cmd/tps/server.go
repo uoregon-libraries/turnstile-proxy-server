@@ -47,11 +47,14 @@ const (
 	cachedRequestOverhead = 4096
 )
 
-// trustedProxyCIDRs lists the networks from which TPS will honor
-// X-Forwarded-* headers. TPS is intended to run behind a reverse proxy on a
-// private network and must never be exposed to the public internet directly,
-// so only loopback and RFC 1918 / RFC 4193 ranges are trusted.
-var trustedProxyCIDRs = []string{
+// defaultTrustedProxies lists the networks from which TPS honors
+// X-Forwarded-* headers when TRUSTED_PROXIES isn't set. TPS is intended to
+// run behind a reverse proxy on a private network and must never be exposed
+// to the public internet directly, so loopback and the RFC 1918 / RFC 4193
+// ranges cover the normal deployment; operators whose front proxy reaches
+// TPS from elsewhere, or who want to trust only the proxy's own address,
+// override this via TRUSTED_PROXIES.
+var defaultTrustedProxies = []string{
 	"127.0.0.0/8",
 	"10.0.0.0/8",
 	"172.16.0.0/12",
@@ -117,7 +120,7 @@ func NewServer(router *gin.Engine, store db.Store) *Server {
 	var render = newTemplateStore(slog.Default(), gin.IsDebugging())
 
 	router.HTMLRender = render
-	var err = router.SetTrustedProxies(trustedProxyCIDRs)
+	var err = router.SetTrustedProxies(defaultTrustedProxies)
 	if err != nil {
 		panic(fmt.Sprintf("invalid trusted proxy CIDR: %s", err))
 	}
@@ -198,6 +201,23 @@ func (s *Server) SetProxyTarget(target string) *Server {
 		panic(fmt.Sprintf("invalid proxy target: %s", err))
 	}
 	s.proxyTarget = u
+	return s
+}
+
+// SetTrustedProxies replaces the peers whose X-Forwarded-* headers are
+// honored when deriving the client IP: each entry is an IP or a CIDR range,
+// and an empty list trusts no peer at all, so the connection's own address is
+// always the client IP. The client IP feeds token IP tracking, bypass-key
+// CIDR checks, and the event log, so this list is what keeps an internal host
+// from spoofing all three. It panics on an entry that won't parse because
+// that is the same check startup runs against TRUSTED_PROXIES, so a Server
+// built directly (in a test, say) can't be given a list the configured path
+// would have rejected.
+func (s *Server) SetTrustedProxies(proxies []string) *Server {
+	var err = s.r.SetTrustedProxies(proxies)
+	if err != nil {
+		panic(fmt.Sprintf("invalid trusted proxy list: %s", err))
+	}
 	return s
 }
 
