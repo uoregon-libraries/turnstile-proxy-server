@@ -147,7 +147,18 @@ func serve() {
 
 	var router = gin.New()
 	var ginLog = logger.With("log.source", "gin.Engine")
-	router.Use(sloggin.New(ginLog))
+	// The middleware's default levels treat every 4xx as a WARN, but a 403 is
+	// TPS's most common response — a challenge is the product working, not a
+	// problem — and during a bot flood those warnings are voluminous enough to
+	// rotate everything else out of the journal. Client errors log at DEBUG
+	// (-log-level debug brings them back); the event database remains the
+	// durable per-request record either way. Server errors stay loud.
+	router.Use(sloggin.NewWithConfig(ginLog, sloggin.Config{
+		DefaultLevel:     slog.LevelInfo,
+		ClientErrorLevel: slog.LevelDebug,
+		ServerErrorLevel: slog.LevelError,
+		WithRequestID:    true,
+	}))
 	router.Use(gin.Recovery())
 
 	var server = NewServer(router, store).

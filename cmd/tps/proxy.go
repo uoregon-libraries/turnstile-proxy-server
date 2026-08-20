@@ -309,7 +309,11 @@ func (s *Server) serveChallenge(c *gin.Context, body []byte, reason, jti string)
 		}
 		s.requestCache.Set(newRequestID, cachedReq, cache.DefaultExpiration)
 	}
-	s.logger.Info("No/invalid JWT, serving challenge", "requestID", newRequestID)
+	// Debug, not Info: this fires for every challenged request, which during a
+	// bot flood is nearly every request. The challenged event logged just below
+	// is the durable record; the text log doesn't need to repeat it 600k times
+	// an hour.
+	s.logger.Debug("No/invalid JWT, serving challenge", "requestID", newRequestID)
 	s.logDecision(c, db.Event{
 		Outcome: db.OutcomeChallenged,
 		Reason:  reason,
