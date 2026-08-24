@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## v3.1.0
 
 ### Added
 
 - New config: `MAX_CHALLENGE_BODY` and `MAX_CHALLENGE_CACHE`. These prevent TPS
   from letting bots do trivial DoS attacks by sending unlimited POST requests.
+- New config: `TRUSTED_PROXIES` controls which peers TPS believes about the
+  real client IP (via `X-Forwarded-For`). See `env-example` for details.
 - Bypass keys: provisioned credentials that let vetted clients (careful
   research scrapers, mostly) through TPS without solving a challenge. Requires
   a manual command to provision keys, and requires specifying rate limits to
@@ -42,6 +44,11 @@
 - Challenged GET requests are no longer buffered or cached while their
   challenge is pending. No POST body, no special replay rules, so this saves
   some RAM and reduces risk during floods.
+- Serving challenges (the *core purpose* of TPS) no longer pukes a torrent of
+  warnings to the log. All messages are basically debug, which should be
+  silenced in production environments. Caddy will have info about response
+  status codes, so gin doesn't need to output this, and our database contains
+  the actual action data if that needs to be scrutinized.
 - `LOG_RETENTION` now defaults to 48 hours instead of 30 days to ensure massive
   traffic isn't running you out of disk space
 - `PROXY_TARGET` now gives a useful error if it contains invalid elements (it

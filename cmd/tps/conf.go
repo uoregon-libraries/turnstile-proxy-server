@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"maps"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -119,6 +120,7 @@ type config struct {
 	maxChallengeBody   int64
 	maxChallengeCache  int64
 	adminSecret        string
+	trustedProxies     []string
 }
 
 // getenv reads the configuration from the environment (after applying any
@@ -177,6 +179,8 @@ func getenv() (config, []string) {
 	conf.tokenBindUserAgent = parseBoolEnv("TOKEN_BIND_USER_AGENT", true, &errs)
 	conf.tokenRequestBudget = parseIntEnv("TOKEN_REQUEST_BUDGET", 1000, 0, &errs)
 	conf.tokenIPSwitchCost = parseIntEnv("TOKEN_IP_SWITCH_COST", 10, 1, &errs)
+
+	conf.trustedProxies = parseTrustedProxiesEnv(&errs)
 
 	conf.maxChallengeBody = int64(parseIntEnv("MAX_CHALLENGE_BODY", defaultMaxChallengeBody, 0, &errs))
 	conf.maxChallengeCache = int64(parseIntEnv("MAX_CHALLENGE_CACHE", defaultMaxChallengeCache, 0, &errs))
@@ -267,6 +271,68 @@ func parseIntEnv(name string, def, minVal int, errs *[]string) int {
 		return def
 	}
 	return n
+}
+
+// parseTrustedProxiesEnv reads TRUSTED_PROXIES: the peers whose
+// X-Forwarded-* headers TPS honors when deriving the client IP, as a
+// comma-separated list of IPs and CIDR ranges. The entry "private_ranges"
+// expands to loopback plus the private ranges, alone or alongside other
+// entries, so a CDN's ranges can be added without spelling the usual
+// networks back out. Unset keeps the default (the same private ranges), and
+// the literal "none" trusts no peer at all — alone only, since "none" next
+// to other entries is a contradiction. A value that names nothing — "," and
+// the like — is an error rather than a guess at which of unset or "none" was
+// meant. An entry that won't parse appends to errs; whatever does parse is
+// still returned so getenv can keep collecting the rest of the config's
+// problems.
+func parseTrustedProxiesEnv(errs *[]string) []string {
+	var raw = strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))
+	if raw == "" {
+		return privateRanges
+	}
+	if strings.EqualFold(raw, "none") {
+		return []string{}
+	}
+
+	var list []string
+	var bad bool
+	for entry := range strings.SplitSeq(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		switch {
+		case entry == "":
+		case strings.EqualFold(entry, "none"):
+			*errs = append(*errs, `TRUSTED_PROXIES "none" must be the whole value, not one entry in a list`)
+			bad = true
+		case strings.EqualFold(entry, "private_ranges"):
+			list = append(list, privateRanges...)
+		default:
+			if err := validateTrustedProxy(entry); err != nil {
+				*errs = append(*errs, err.Error())
+				bad = true
+				continue
+			}
+			list = append(list, entry)
+		}
+	}
+	if len(list) == 0 && !bad {
+		*errs = append(*errs, fmt.Sprintf("TRUSTED_PROXIES %q names no proxies; unset it for the default "+
+			`private ranges, or set it to "none" to never honor forwarded headers`, raw))
+	}
+	return list
+}
+
+// validateTrustedProxy rejects a TRUSTED_PROXIES entry that is neither an IP
+// address nor a CIDR range.
+func validateTrustedProxy(entry string) error {
+	if strings.Contains(entry, "/") {
+		var _, _, err = net.ParseCIDR(entry)
+		if err == nil {
+			return nil
+		}
+	} else if net.ParseIP(entry) != nil {
+		return nil
+	}
+	return fmt.Errorf("TRUSTED_PROXIES entry %q must be an IP address or CIDR range, e.g. 10.1.2.3 or 10.0.0.0/8", entry)
 }
 
 // validateTargetURL reports whether the given backend URL can be proxied to.

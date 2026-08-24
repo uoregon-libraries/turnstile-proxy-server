@@ -20,6 +20,35 @@ JWT_SIGNING_KEY=shhhhhh-this-is-very-secret
 # front proxy that does the routing (see example/ for the latter).
 PROXY_TARGET="http://localhost"
 
+# Which peers TPS trusts to tell it the real client IP, as a comma-separated
+# list of IP addresses and/or CIDR ranges. When a request arrives from a
+# trusted address, TPS reads the client IP from its X-Forwarded-For header
+# (walking past any other trusted hops in the chain); from anywhere else, the
+# connection's own address is the client IP and forwarded headers are ignored.
+# The client IP feeds token IP tracking, bypass keys' CIDR restrictions, and
+# the analytics event log, so this list is what keeps a machine that can reach
+# TPS from spoofing all three.
+#
+# Leaving this unset sticks with the pre-3.1.0 system of trusting all private
+# ranges. This is insufficient if you have a separate host (Cloudflare / CDN,
+# HAProxy fronting multiple systems, etc.), in which case you'll have to
+# explicitly list all trusted networks. Because TPS typically runs alongside an
+# on-host Caddy, you'll have to trust the external proxy *and* Caddy's internal
+# IP address.
+#
+# The special entry "private_ranges" expands to everything the default trusts
+# (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, ::1/128, fc00::/7).
+# It can be the whole value or sit in the list alongside other entries, so the
+# CDN case above can be TRUSTED_PROXIES="private_ranges,<CDN egress ranges>"
+# instead of spelling the private networks back out.
+#
+# The special value "none" trusts no one: forwarded headers are always ignored,
+# and every client is its connection's address. This is not generally
+# recommended, as TPS isn't meant to get direct traffic. Unlike
+# "private_ranges", it must be the entire value: "none" next to other entries
+# is a contradiction, and TPS refuses to start rather than guess.
+#TRUSTED_PROXIES="10.1.2.3"
+
 # Where will you record the stats? TPS logs one decision event per request
 # (challenge served, verified, proxied, etc.) to an embedded SQLite database at
 # this path; the file is created if it doesn't exist. If unset, event logging

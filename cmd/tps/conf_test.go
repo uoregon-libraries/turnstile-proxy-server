@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -224,6 +226,61 @@ func TestValidateChallengeLimits(t *testing.T) {
 	}
 }
 
+func TestParseTrustedProxiesEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    []string
+		wantErr string
+	}{
+		{name: "unset keeps the default", value: "", want: privateRanges},
+		{name: "a single address", value: "203.0.113.7", want: []string{"203.0.113.7"}},
+		{name: "a mixed list with spaces and a stray comma",
+			value: " 203.0.113.7, 198.51.100.0/24, ,2001:db8::/32",
+			want:  []string{"203.0.113.7", "198.51.100.0/24", "2001:db8::/32"}},
+		{name: "private_ranges alone matches the default", value: "private_ranges", want: privateRanges},
+		{name: "private_ranges expands in place within a list",
+			value: "203.0.113.7,PRIVATE_RANGES,198.51.100.0/24",
+			want:  append(append([]string{"203.0.113.7"}, privateRanges...), "198.51.100.0/24")},
+		{name: "none trusts no peer", value: "none", want: []string{}},
+		{name: "NONE in any case", value: "NONE", want: []string{}},
+		{name: "none in a list is a contradiction", value: "none,10.0.0.1",
+			want: []string{"10.0.0.1"}, wantErr: `"none" must be the whole value`},
+		{name: "an entry that is not an address", value: "10.0.0.1,front-proxy.example",
+			want: []string{"10.0.0.1"}, wantErr: `"front-proxy.example"`},
+		{name: "a malformed CIDR", value: "10.0.0.0/33", wantErr: `"10.0.0.0/33"`},
+		{name: "only separators names nothing", value: " , ,", wantErr: "names no proxies"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TRUSTED_PROXIES", tc.value)
+			var errs []string
+			got := parseTrustedProxiesEnv(&errs)
+
+			if tc.wantErr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("parseTrustedProxiesEnv(%q) reported errors: %v", tc.value, errs)
+				}
+				if !slices.Equal(got, tc.want) {
+					t.Errorf("parseTrustedProxiesEnv(%q) = %v, want %v", tc.value, got, tc.want)
+				}
+				return
+			}
+
+			if len(errs) == 0 {
+				t.Fatalf("parseTrustedProxiesEnv(%q) reported no errors, want one mentioning %s", tc.value, tc.wantErr)
+			}
+			if joined := strings.Join(errs, "; "); !strings.Contains(joined, tc.wantErr) {
+				t.Errorf("errors %q don't mention %s", joined, tc.wantErr)
+			}
+			if tc.want != nil && !slices.Equal(got, tc.want) {
+				t.Errorf("parseTrustedProxiesEnv(%q) = %v, want the valid entries %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 // configEnvVars is every variable getenv reads, so a test can put the whole
 // environment in a known state instead of inheriting whatever the developer
 // running it happens to have exported.
@@ -231,7 +288,7 @@ var configEnvVars = []string{
 	"BIND_ADDR", "TURNSTILE_SECRET_KEY", "TURNSTILE_SITE_KEY", "JWT_SIGNING_KEY",
 	"PROXY_TARGET", "DB_PATH", "LOG_DB_PATH", "LOG_RETENTION", "TEMPLATE_PATH", "TOKEN_LIFETIME",
 	"TOKEN_BIND_USER_AGENT", "TOKEN_REQUEST_BUDGET", "TOKEN_IP_SWITCH_COST",
-	"MAX_CHALLENGE_BODY", "MAX_CHALLENGE_CACHE", "ADMIN_SECRET",
+	"MAX_CHALLENGE_BODY", "MAX_CHALLENGE_CACHE", "ADMIN_SECRET", "TRUSTED_PROXIES",
 	"PROXY_TARGETS", "CHALLENGE_MODE",
 }
 
@@ -294,6 +351,9 @@ func TestGetenv(t *testing.T) {
 		if conf.templatePath != "/var/local/tps/templates" {
 			t.Errorf("templatePath = %q, want the default", conf.templatePath)
 		}
+		if !slices.Equal(conf.trustedProxies, privateRanges) {
+			t.Errorf("trustedProxies = %v, want the default %v", conf.trustedProxies, privateRanges)
+		}
 		// Unset means the feature is off, not that it's misconfigured
 		if conf.dbPath != "" || conf.adminSecret != "" {
 			t.Errorf("dbPath = %q and adminSecret = %q, want both empty", conf.dbPath, conf.adminSecret)
@@ -312,6 +372,7 @@ func TestGetenv(t *testing.T) {
 		env["MAX_CHALLENGE_BODY"] = "2048"
 		env["MAX_CHALLENGE_CACHE"] = "1048576"
 		env["ADMIN_SECRET"] = "admin-secret"
+		env["TRUSTED_PROXIES"] = "203.0.113.7, 198.51.100.0/24"
 		setConfigEnv(t, env)
 
 		conf, errs := getenv()
@@ -327,7 +388,7 @@ func TestGetenv(t *testing.T) {
 			tokenLifetime: conf.tokenLifetime, tokenBindUserAgent: conf.tokenBindUserAgent,
 			tokenRequestBudget: conf.tokenRequestBudget, tokenIPSwitchCost: conf.tokenIPSwitchCost,
 			maxChallengeBody: conf.maxChallengeBody, maxChallengeCache: conf.maxChallengeCache,
-			adminSecret: conf.adminSecret,
+			adminSecret: conf.adminSecret, trustedProxies: conf.trustedProxies,
 		}
 		var want = config{
 			bindAddr: ":8080", turnstileSecretKey: "turnstile-secret",
@@ -337,9 +398,9 @@ func TestGetenv(t *testing.T) {
 			tokenLifetime: 30 * time.Minute, tokenBindUserAgent: false,
 			tokenRequestBudget: 50, tokenIPSwitchCost: 3,
 			maxChallengeBody: 2048, maxChallengeCache: 1048576,
-			adminSecret: "admin-secret",
+			adminSecret: "admin-secret", trustedProxies: []string{"203.0.113.7", "198.51.100.0/24"},
 		}
-		if got != want {
+		if !reflect.DeepEqual(got, want) {
 			t.Errorf("config =\n%+v\nwant\n%+v", got, want)
 		}
 	})
