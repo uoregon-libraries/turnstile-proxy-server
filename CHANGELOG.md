@@ -65,7 +65,10 @@
   name="original_method" value="{{.OriginalMethod}}">`. Use `<challenge-form>`
   instead of building your own forms unless you have a *really* good reason.
 - If you used `-env-file`, you may have secrets logged in plaintext. Rotate
-  your keys (`JWT_SIGNING_KEY` and `TURNSTILE_SECRET_KEY`) if possible.
+  your keys (`JWT_SIGNING_KEY` and `TURNSTILE_SECRET_KEY`) if possible. This is
+  usually not a huge risk, as logs go to STDOUT, but if you're on a shared
+  server or log files are easily discovered by people who shouldn't know these
+  secrets, you definitely want to rotate them.
 - Change `LOG_DB_PATH` to `DB_PATH`
 
 ## v3.0.0
